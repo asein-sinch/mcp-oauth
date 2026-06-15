@@ -48,6 +48,11 @@ const envSchema = z
     // RCS-enabled app when not set here / passed in.
     CONVERSATION_APP_ID: z.string().optional(),
     CONVERSATION_REGION: z.enum(['us', 'eu', 'br']).default('eu'),
+
+    // Events service (sinch-events-server) — powers get_message_events and get_events_by_range.
+    // All optional: tools return a clear error if absent.
+    EVENTS_API_URL: z.string().url().optional(),
+    EVENTS_API_KEY: z.string().optional(),
   })
   .superRefine((v, ctx) => {
     const require = (key: keyof typeof v, present: unknown) => {
@@ -109,6 +114,8 @@ export const config = {
   rcgBaseUrl: raw.RCG_BASE_URL,
   conversationAppId: raw.CONVERSATION_APP_ID,
   conversationRegion: raw.CONVERSATION_REGION,
+  eventsApiUrl: raw.EVENTS_API_URL,
+  eventsApiKey: raw.EVENTS_API_KEY,
 };
 
 export type SinchCredentials = z.infer<typeof credSchema>;

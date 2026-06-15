@@ -14,6 +14,7 @@ import { registerAppTool, EXTENSION_ID } from '@modelcontextprotocol/ext-apps/se
 import { buildCreateSenderBody, SUPPORTED_COUNTRIES, RECOMMENDED_COUNTRIES } from './rcsSenderTemplate.js';
 import { generateRcsMessage, isRcgConfigured } from './rcg.js';
 import { RCS_PREVIEW_URI, registerRcsPreviewResource } from './rcsPreview.js';
+import { getEventsByMessageId, getEventsByRange, isEventsConfigured } from './events.js';
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -313,6 +314,56 @@ export function createMcpServer(ctx: {
           structuredContent: { ...lean, canvas: result.canvas, inline_resource_uri: RCS_PREVIEW_URI },
           _meta: { ui: { resourceUri: RCS_PREVIEW_URI }, 'ui/resourceUri': RCS_PREVIEW_URI },
         };
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // --- Events service: delivery tracking and range queries ---
+
+  server.registerTool(
+    'get_message_events',
+    {
+      title: 'Get message events',
+      description:
+        'Returns the delivery and engagement events for a specific message (delivery status, ' +
+        'read receipt, button clicks). Pass the message ID returned by send-rcs-message. ' +
+        'Requires the events service (EVENTS_API_URL) to be configured.',
+      inputSchema: {
+        messageId: z.string().min(1).describe('The message ID returned by send-rcs-message'),
+      },
+    },
+    async ({ messageId }) => {
+      if (!isEventsConfigured()) {
+        return errorResult('Events service is not configured. Set EVENTS_API_URL (and optionally EVENTS_API_KEY).');
+      }
+      try {
+        return textResult(await getEventsByMessageId(messageId));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_events_by_range',
+    {
+      title: 'Get events by time range',
+      description:
+        'Returns all messaging events (delivery, read, opt-in/opt-out, clicks) for a given ' +
+        'time period. Use ISO 8601 timestamps. Useful for campaign reporting and analytics.',
+      inputSchema: {
+        from: z.string().describe('Start of the range, ISO 8601 (e.g. 2026-06-15T00:00:00Z)'),
+        to: z.string().describe('End of the range, ISO 8601 (e.g. 2026-06-15T23:59:59Z)'),
+      },
+    },
+    async ({ from, to }) => {
+      if (!isEventsConfigured()) {
+        return errorResult('Events service is not configured. Set EVENTS_API_URL (and optionally EVENTS_API_KEY).');
+      }
+      try {
+        return textResult(await getEventsByRange(from, to));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
