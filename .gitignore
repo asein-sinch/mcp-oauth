@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build output
+dist/
+
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Test / local scripts
+auth-server/flow-test.mjs
+auth-server/mint-token-local.mjs
+auth-server/print-token.mjs
+auth-server/run-with-env.mjs
+mcp-server/mcp-test.mjs
+mcp-server/mcp-rcs-test.mjs
+mcp-server/rcs-live.mjs
+mcp-server/rcg-live.mjs
+mcp-server/send-rcs-test.mjs
+mcp-server/generate-rcs-test.mjs
+mcp-server/run-with-env.mjs
+
+# IDE
+.idea/
+
+# Misc
+.DS_Store
+*.DS_Store
+.pytest_cache/
+*.db
+*.sqlite

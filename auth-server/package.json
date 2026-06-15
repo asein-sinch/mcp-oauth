@@ -1,0 +1,29 @@
+{
+  "name": "sinch-gemini-auth-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OAuth 2.0 authorization server that issues JWTs with a subproject_id claim for the Sinch <-> Gemini Enterprise MCP demo",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc && cp -r src/views dist/views",
+    "start": "node dist/server.js",
+    "gen-keys": "tsx scripts/gen-keys.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-session": "^2.1.0",
+    "express": "^4.19.2",
+    "jose": "^5.9.6",
+    "nanoid": "^5.0.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-session": "^2.0.49",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

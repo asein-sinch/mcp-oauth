@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in · Sinch</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: grid; place-items: center;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #0b0d12; color: #e7e9ee;
+      }
+      .card {
+        width: 360px; max-width: calc(100vw - 32px);
+        background: #151922; border: 1px solid #232838; border-radius: 14px;
+        padding: 28px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+      }
+      .brand { font-weight: 700; font-size: 20px; letter-spacing: .5px; margin: 0 0 4px; }
+      .sub { margin: 0 0 22px; color: #9aa3b2; font-size: 13px; line-height: 1.4; }
+      label { display: block; font-size: 12px; color: #9aa3b2; margin: 14px 0 6px; }
+      input[type="email"], input[type="password"] {
+        width: 100%; padding: 11px 12px; border-radius: 9px;
+        border: 1px solid #2b3144; background: #0e1117; color: #e7e9ee; font-size: 14px;
+      }
+      input:focus { outline: none; border-color: #4c8bf5; }
+      button {
+        width: 100%; margin-top: 22px; padding: 12px; border: 0; border-radius: 9px;
+        background: #4c8bf5; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+      }
+      button:hover { background: #3f7ae0; }
+      .error {
+        background: #3a1620; border: 1px solid #6b2333; color: #ffb3c0;
+        padding: 10px 12px; border-radius: 9px; font-size: 13px; margin-bottom: 8px;
+      }
+      .foot { margin-top: 18px; font-size: 11px; color: #6b7385; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1 class="brand">Sinch</h1>
+      <p class="sub">Sign in to authorize <strong>Gemini Enterprise</strong> to access your Sinch account.</p>
+      {{ERROR}}
+      {{FORM}}
+      <p class="foot">Demo identity provider · do not use in production</p>
+    </div>
+  </body>
+</html>
