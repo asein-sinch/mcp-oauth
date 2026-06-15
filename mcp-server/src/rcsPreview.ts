@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -14,8 +15,12 @@ import { registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/e
 // Bump the version suffix whenever the preview HTML changes — hosts cache app resources by URI.
 export const RCS_PREVIEW_URI = 'ui://sinch/rcs-preview-v2.html';
 
-// Resolves to mcp-server/ui under tsx (dev) and dist/ui in prod (the build copies ui -> dist/ui).
-const PREVIEW_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'rcs-preview.html');
+// In prod, import.meta.url resolves to dist/rcsPreview.js so the ui folder is at dist/ui/.
+// In dev (tsx), it resolves to src/rcsPreview.ts so the ui folder is one level up at ui/.
+const _base = dirname(fileURLToPath(import.meta.url));
+const PREVIEW_PATH = existsSync(join(_base, 'ui', 'rcs-preview.html'))
+  ? join(_base, 'ui', 'rcs-preview.html')
+  : join(_base, '..', 'ui', 'rcs-preview.html');
 
 export function registerRcsPreviewResource(server: McpServer): void {
   registerAppResource(
