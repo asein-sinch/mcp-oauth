@@ -301,6 +301,55 @@ export function createMcpServer(ctx: {
       }),
   );
 
+  // Plain text message on any Conversation API channel (SMS, WhatsApp, RCS text, …).
+  // NOT for rich RCS cards — use generate-rcs-message + send-rcs-message for that.
+  server.registerTool(
+    'send_text_message',
+    {
+      title: 'Send text message',
+      description:
+        'Sends a plain text message to a recipient via the Sinch Conversation API. ' +
+        'Use this for simple text on any channel (SMS, WHATSAPP, RCS, …). ' +
+        'Do NOT use this for rich RCS cards — for those, call generate-rcs-message first, ' +
+        'then send-rcs-message with the generated template.',
+      inputSchema: {
+        to: z
+          .string()
+          .regex(E164, 'must be E.164, e.g. +33612345678')
+          .describe('Recipient phone number in E.164 format'),
+        text: z.string().min(1).describe('Plain text content of the message'),
+        channel: z
+          .enum(['SMS', 'RCS', 'WHATSAPP', 'MESSENGER', 'VIBER', 'VIBERBM', 'INSTAGRAM', 'TELEGRAM'])
+          .default('SMS')
+          .describe('Channel to send on (default SMS)'),
+        appId: z
+          .string()
+          .optional()
+          .describe('Conversation app id. Defaults to CONVERSATION_APP_ID env var if set.'),
+        region: z
+          .enum(['us', 'eu', 'br'])
+          .optional()
+          .describe('Conversation API region. Defaults to CONVERSATION_REGION (eu).'),
+      },
+    },
+    async ({ to, text, channel, appId, region }) =>
+      withSinch(async (creds) => {
+        const usedRegion = region ?? config.conversationRegion;
+        const usedAppId = appId ?? config.conversationAppId;
+        if (!usedAppId) {
+          return errorResult(
+            'No Conversation app id provided. Pass appId or set CONVERSATION_APP_ID.',
+          );
+        }
+        const body = {
+          app_id: usedAppId,
+          recipient: { identified_by: { channel_identities: [{ channel, identity: to }] } },
+          message: { text_message: { text } },
+        };
+        return textResult(await sendConversationMessage(ctx.subprojectId, creds, usedRegion, body));
+      }),
+  );
+
   // --- Generative AI: draft an RCS rich message via the Sinch RCG API ---
   // Uses company-wide Entra credentials (config), not the per-subproject Sinch vault.
   // Registered as an MCP Apps tool so hosts that support it render an interactive preview;
