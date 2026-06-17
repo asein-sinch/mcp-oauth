@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { config, type SinchCredentials } from './config.js';
 import {
   listActiveNumbers,
+  listRcsSenders,
   createRcsSender,
   setRcsSenderCountries,
   addRcsTestNumbers,
@@ -102,6 +103,41 @@ export function createMcpServer(ctx: {
       inputSchema: { pageSize: z.number().int().min(1).max(100).optional() },
     },
     async ({ pageSize }) => withSinch(async (creds) => textResult(await listActiveNumbers(ctx.subprojectId, creds, pageSize ?? 10))),
+  );
+
+  server.registerTool(
+    'list_rcs_senders',
+    {
+      title: 'List RCS senders',
+      description:
+        'Lists the RCS senders for the signed-in subproject. Returns id, state, region, ' +
+        'billingCategory, useCase, hostingRegion and brand/countries details for each sender.',
+      inputSchema: {
+        pageSize: z.number().int().min(1).max(100).optional().describe('Number of senders to return (default 20)'),
+        pageToken: z.string().optional().describe('Pagination token from a previous response'),
+      },
+    },
+    async ({ pageSize, pageToken }) =>
+      withSinch(async (creds) => {
+        const raw = (await listRcsSenders(ctx.subprojectId, creds, pageSize ?? 20, pageToken)) as {
+          senders?: Record<string, unknown>[];
+          nextPageToken?: string;
+          totalSize?: number;
+        };
+        const senders = (raw.senders ?? []).map((s: any) => ({
+          id: s.id,
+          state: s.state,
+          region: s.region,
+          billingCategory: s.billingCategory,
+          useCase: s.useCase,
+          hostingRegion: s.hostingRegion,
+          details: {
+            brand: s.details?.brand,
+            countries: s.details?.countries,
+          },
+        }));
+        return textResult({ senders, nextPageToken: raw.nextPageToken ?? null, totalSize: raw.totalSize ?? null });
+      }),
   );
 
   // --- RCS sender onboarding flow: create -> add countries -> add test numbers -> launch ---

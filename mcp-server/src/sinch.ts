@@ -112,6 +112,18 @@ export function addRcsTestNumbers(
   );
 }
 
+/** List RCS senders for the subproject, with optional pagination. */
+export async function listRcsSenders(
+  subprojectId: string,
+  creds: SinchCredentials,
+  pageSize = 20,
+  pageToken?: string,
+): Promise<unknown> {
+  const params = new URLSearchParams({ pageSize: String(pageSize) });
+  if (pageToken) params.set('pageToken', pageToken);
+  return provisioningRequest(subprojectId, creds, 'GET', `/rcs/senders?${params}`);
+}
+
 /** Begin the launch process for a sender (no request body). */
 export function launchRcsSender(
   subprojectId: string,
