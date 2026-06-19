@@ -7,6 +7,27 @@ import { consumeCode } from './store.js';
 import { pollDeviceToken } from './deviceStore.js';
 import { verifyPkceS256 } from './pkce.js';
 
+// ── User token cache ───────────────────────────────────────────────────
+// Keyed by client_id. Survives context_id changes within the same GE session.
+// In a real multi-user system, key by the authenticated GE user identity instead.
+const userTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function cacheToken(clientId: string, token: string, ttlSeconds: number): void {
+  userTokenCache.set(clientId, { token, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
+/** GET /token/cached?client_id=xxx — return a valid cached token if available. */
+export function handleTokenCached(req: Request, res: Response): void {
+  const clientId = String(req.query.client_id ?? '').trim();
+  const entry = userTokenCache.get(clientId);
+  if (!entry || Date.now() > entry.expiresAt) {
+    userTokenCache.delete(clientId);
+    res.status(404).json({ error: 'no_cached_token' });
+    return;
+  }
+  res.json({ access_token: entry.token, token_type: 'Bearer', cached: true });
+}
+
 function tokenError(res: Response, status: number, error: string, description?: string): void {
   res.status(status).json({ error, error_description: description });
 }
@@ -63,6 +84,10 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
       .setIssuedAt(now)
       .setExpirationTime(now + config.accessTokenTtl)
       .sign(getPrivateKey());
+
+    // Cache the token so subsequent A2A turns (with a new context_id) can
+    // retrieve it without re-doing the full device flow.
+    cacheToken(clientId, accessToken, config.accessTokenTtl);
 
     res.json({
       access_token: accessToken,

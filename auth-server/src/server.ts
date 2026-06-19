@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { loadKeys } from './keys.js';
 import { handleAuthorize } from './auth/authorize.js';
 import { handleLogin } from './auth/login.js';
-import { handleToken } from './auth/token.js';
+import { handleToken, handleTokenCached } from './auth/token.js';
 import { handleJwks, handleAsMetadata } from './auth/metadata.js';
 import { handleDeviceAuthorization, handleDeviceGetPage, handleDevicePost } from './auth/device.js';
 
@@ -41,6 +41,7 @@ async function main(): Promise<void> {
 
   // Device Authorization Grant (RFC 8628) — used by the Sinch agent.
   app.post('/device_authorization', handleDeviceAuthorization);
+  app.get('/token/cached', handleTokenCached);   // agent: check cache before re-auth
   app.get('/device', handleDeviceGetPage);
   app.post('/device', handleDevicePost);
 

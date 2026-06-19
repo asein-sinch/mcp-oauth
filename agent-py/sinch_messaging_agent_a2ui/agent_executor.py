@@ -286,6 +286,23 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       )
 
   # ── Sinch auth helpers ────────────────────────────────────────────────────
+  async def _check_cached_token(self) -> str | None:
+    """Check auth server for a cached token (survives context_id changes between GE turns)."""
+    try:
+      async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(
+            f"{SINCH_AUTH_SERVER}/token/cached",
+            params={"client_id": SINCH_DEVICE_CLIENT_ID},
+        )
+        if resp.status_code == 200:
+          token = resp.json().get("access_token")
+          if token:
+            logger.info("[AUTH] ✅ Retrieved cached token from auth server.")
+            return token
+    except Exception as e:
+      logger.warning("[AUTH] Could not check cached token: %s", e)
+    return None
+
   async def _initiate_device_auth(self, context_id: str) -> dict | None:
     """Call /device_authorization on the auth server.
     Passes context_id so the auth server returns the SAME user_code for this
@@ -470,6 +487,13 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     # returns the SAME user_code for the same context_id across all A2A turns,
     # so we never need to persist sinch_device_code in session state.
     sinch_token: str | None = session.state.get("sinch_token")
+
+    # Check the auth server's token cache first — this survives context_id
+    # changes between button clicks in GE (each click may use a new context_id).
+    if not sinch_token:
+      sinch_token = await self._check_cached_token()
+      if sinch_token:
+        await self._persist_state(session, {"sinch_token": sinch_token})
 
     if not sinch_token:
       logger.info("[AUTH] No Sinch token — calling device_authorization (idempotent).")
