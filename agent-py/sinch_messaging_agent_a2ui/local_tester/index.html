@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>A2UI Local Tester</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .chat-box { border: 1px solid #ccc; padding: 10px; height: 500px; overflow-y: scroll; margin-bottom: 10px; background: #fafafa; }
+        .card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .button { background: #007bff; color: white; padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px; margin-top: 5px; }
+        .button:hover { background: #0056b3; }
+        .input-group { display: flex; gap: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-top: 5px; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid #e9ecef; overflow-x: auto; }
+        details { margin-top: 10px; }
+        summary { cursor: pointer; color: #007bff; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .session-info { font-size: 0.9em; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>A2UI Local Tester</h1>
+            <div class="session-info">
+                <span id="session-id-display"></span>
+                <button onclick="startNewSession()" class="button" style="background: #dc3545; margin-left: 10px;">New Session</button>
+            </div>
+        </div>
+        
+        <div class="chat-box" id="chat"></div>
+        <div class="input-group">
+            <input type="text" id="input" placeholder="Type a message...">
+            <button onclick="sendMessage()" class="button">Send</button>
+        </div>
+        
+        <details>
+            <summary>Show Raw UI JSON</summary>
+            <pre id="json-dump">No UI data yet.</pre>
+        </details>
+    </div>
+
+    <script>
+        let dataModel = {};
+        let sessionId = generateSessionId();
+        let currentRootId = null;
+
+        function generateSessionId() {
+            return 'session_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        function updateSessionDisplay() {
+            document.getElementById('session-id-display').innerText = `Session: ${sessionId}`;
+        }
+
+        function startNewSession() {
+            sessionId = generateSessionId();
+            updateSessionDisplay();
+            dataModel = {};
+            currentRootId = null;
+            document.getElementById('chat').innerHTML = '';
+            appendMessage('System', 'Started a new session.');
+            document.getElementById('json-dump').innerText = 'No UI data yet.';
+        }
+
+        updateSessionDisplay();
+
+        document.getElementById('input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        async function sendMessage() {
+            const input = document.getElementById('input');
+            const text = input.value;
+            if (!text.trim()) return;
+            input.value = '';
+            
+            appendMessage('User', text);
+            await sendPayload({ message: { text: text } });
+        }
+
+        async function sendUserAction(userAction, messageText) {
+            appendMessage('User', messageText);
+            
+            const payload = {
+                message: {
+                    text: messageText,
+                    parts: [
+                        {
+                            data: { userAction: userAction },
+                            metadata: { mimeType: 'application/json+a2ui' }
+                        }
+                    ]
+                }
+            };
+            
+            await sendPayload(payload);
+        }
+
+        async function sendPayload(params) {
+            const chat = document.getElementById('chat');
+            const loadingDiv = document.createElement('div');
+            loadingDiv.style.marginBottom = '10px';
+            loadingDiv.innerHTML = `<strong>System:</strong> Agent is thinking...`;
+            chat.appendChild(loadingDiv);
+            chat.scrollTop = chat.scrollHeight;
+
+            try {
+                const response = await fetch('/jsonrpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'message/send',
+                        params: { ...params, session_id: sessionId },
+                        id: Date.now()
+                    })
+                });
+                
+                const data = await response.json();
+                loadingDiv.remove();
+                handleResponse(data);
+            } catch (error) {
+                loadingDiv.remove();
+                appendMessage('Error', `Failed to connect to server: ${error.message}`);
+            }
+        }
+
+        function appendMessage(sender, text) {
+            const chat = document.getElementById('chat');
+            const div = document.createElement('div');
+            div.style.marginBottom = '10px';
+            div.innerHTML = `<strong>${sender}:</strong> ${text}`;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        function handleResponse(data) {
+            if (data.error) {
+                appendMessage('Error', data.error.message);
+                return;
+            }
+            
+            const parts = data.result.message.parts || [];
+            
+            // First pass to find beginRendering and extract root ID
+            for (const part of parts) {
+                if (part.data && part.metadata && part.metadata.mimeType === 'application/json+a2ui') {
+                    const uiData = part.data;
+                    if (uiData.beginRendering) {
+                        currentRootId = uiData.beginRendering.root;
+                    }
+                }
+            }
+            
+            for (const part of parts) {
+                if (part.text) {
+                    appendMessage('Agent', part.text);
+                }
+                if (part.data && part.metadata && part.metadata.mimeType === 'application/json+a2ui') {
+                    const uiData = part.data;
+                    console.log("Received UI Data:", uiData);
+                    
+                    // Handle Data Model Updates
+                    if (uiData.dataModelUpdate) {
+                        const contents = uiData.dataModelUpdate.contents || [];
+                        for (const item of contents) {
+                            dataModel[item.key] = item.valueString || item.valueNumber || item.valueBoolean;
+                        }
+                    }
+                    
+                    // Handle Surface Updates (Rendering)
+                    if (uiData.surfaceUpdate) {
+                        document.getElementById('json-dump').innerText = JSON.stringify(uiData, null, 2);
+                        const rootToUse = uiData.surfaceUpdate.root || currentRootId;
+                        renderUI(uiData.surfaceUpdate, rootToUse);
+                    }
+                }
+            }
+        }
+
+        function renderUI(surfaceUpdate, rootId) {
+            const chat = document.getElementById('chat');
+            const div = document.createElement('div');
+            div.className = 'card';
+            div.innerHTML = '<h4 style="margin-top:0; color:#4a4a4a; border-bottom:1px solid #eee; padding-bottom:5px;">Rich UI View</h4>';
+            
+            const components = surfaceUpdate.components;
+            
+            if (rootId && components) {
+                const rendered = renderComponent(rootId, components);
+                if (rendered) {
+                    div.appendChild(rendered);
+                }
+            }
+            
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function renderComponent(componentId, components) {
+            const compWrapper = components.find(c => c.id === componentId);
+            if (!compWrapper) {
+                return document.createTextNode(`[Missing: ${componentId}]`);
+            }
+            
+            const comp = compWrapper.component;
+            
+            if (comp.Text) {
+                const div = document.createElement('div');
+                div.innerText = comp.Text.text.literalString || "";
+                if (comp.Text.usageHint === 'h1') div.style.fontSize = '1.8em';
+                if (comp.Text.usageHint === 'h2') div.style.fontSize = '1.4em';
+                if (comp.Text.usageHint === 'h3') div.style.fontSize = '1.2em';
+                div.style.marginBottom = '5px';
+                return div;
+            }
+            
+            if (comp.Card) {
+                const div = document.createElement('div');
+                div.style.border = '1px solid #ccc';
+                div.style.padding = '10px';
+                div.style.borderRadius = '5px';
+                div.style.background = '#fff';
+                div.style.marginBottom = '10px';
+                if (comp.Card.child) {
+                    div.appendChild(renderComponent(comp.Card.child, components));
+                }
+                return div;
+            }
+            
+            if (comp.Column) {
+                const div = document.createElement('div');
+                div.style.display = 'flex';
+                div.style.flexDirection = 'column';
+                div.style.gap = '10px';
+                const children = comp.Column.children.explicitList || [];
+                for (const childId of children) {
+                    div.appendChild(renderComponent(childId, components));
+                }
+                return div;
+            }
+            
+            if (comp.Row) {
+                const div = document.createElement('div');
+                div.style.display = 'flex';
+                div.style.flexDirection = 'row';
+                div.style.gap = '10px';
+                div.style.justifyContent = comp.Row.distribution === 'spaceAround' ? 'space-around' : 'flex-start';
+                const children = comp.Row.children.explicitList || [];
+                for (const childId of children) {
+                    div.appendChild(renderComponent(childId, components));
+                }
+                return div;
+            }
+            
+            if (comp.Button) {
+                const btn = document.createElement('button');
+                btn.className = 'button';
+                if (comp.Button.child) {
+                    const childComp = components.find(c => c.id === comp.Button.child);
+                    if (childComp && childComp.component.Text) {
+                        btn.innerText = childComp.component.Text.text.literalString;
+                    } else {
+                        btn.innerText = comp.Button.child;
+                    }
+                }
+                
+                if (comp.Button.action) {
+                    btn.onclick = () => {
+                        const context = comp.Button.action.context || [];
+                        const msgItem = context.find(i => i.key === 'message');
+                        let msgText = "Action triggered";
+                        if (msgItem) {
+                            msgText = msgItem.value.literalString || "Action triggered";
+                        }
+                        
+                        // Construct userAction payload
+                        const userAction = {
+                            name: comp.Button.action.name,
+                            context: {},
+                            inputs: []
+                        };
+                        
+                        // Recover inputs
+                        const inputs = [];
+                        const textfields = document.querySelectorAll('input[type="text"]');
+                        textfields.forEach(tf => {
+                            if (tf.id) {
+                                const cleanId = tf.id.replace("_input", "");
+                                inputs.push({
+                                    id: cleanId,
+                                    value: tf.value
+                                });
+                            }
+                        });
+                        
+                        const selects = document.querySelectorAll('select');
+                        selects.forEach(sel => {
+                            if (sel.id) {
+                                const cleanId = sel.id.replace("_select", "");
+                                inputs.push({
+                                    id: cleanId,
+                                    value: sel.value
+                                });
+                            }
+                        });
+                        
+                        userAction.inputs = inputs;
+                        
+                        // Fill Context
+                        for (const ctxItem of context) {
+                            const key = ctxItem.key;
+                            let val = undefined;
+                            if (ctxItem.value) {
+                                if (ctxItem.value.literalString !== undefined) {
+                                    val = ctxItem.value.literalString;
+                                } else if (ctxItem.value.path !== undefined) {
+                                    val = dataModel[ctxItem.value.path];
+                                    if (val === undefined) {
+                                        // Try to look up in inputs
+                                        const inputValObj = inputs.find(i => i.id === ctxItem.value.path);
+                                        if (inputValObj) {
+                                            val = inputValObj.value;
+                                        }
+                                    }
+                                }
+                            }
+                            userAction.context[key] = val;
+                        }
+                        
+                        sendUserAction(userAction, msgText);
+                    };
+                }
+                return btn;
+            }
+            
+            if (comp.MultipleChoice) {
+                const mc = comp.MultipleChoice;
+                const select = document.createElement('select');
+                if (mc.selections && mc.selections.path) {
+                    select.id = mc.selections.path + "_select";
+                }
+                
+                const emptyOpt = document.createElement('option');
+                emptyOpt.value = "";
+                emptyOpt.innerText = "Select...";
+                select.appendChild(emptyOpt);
+                
+                for (const opt of mc.options) {
+                    const option = document.createElement('option');
+                    option.value = opt.value;
+                    option.innerText = opt.label.literalString || opt.value;
+                    select.appendChild(option);
+                }
+                
+                if (mc.selections && mc.selections.path) {
+                    select.onchange = (e) => {
+                        dataModel[mc.selections.path] = e.target.value;
+                    };
+                }
+                return select;
+            }
+            
+            if (comp.TextField) {
+                const div = document.createElement('div');
+                div.style.display = 'flex';
+                div.style.flexDirection = 'column';
+                div.style.marginBottom = '5px';
+                
+                const label = document.createElement('label');
+                label.innerText = comp.TextField.label.literalString || "";
+                label.style.fontSize = '0.9em';
+                label.style.color = '#555';
+                label.style.marginBottom = '3px';
+                
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.style.padding = '8px';
+                input.style.border = '1px solid #ccc';
+                input.style.borderRadius = '4px';
+                
+                div.appendChild(label);
+                div.appendChild(input);
+                
+                if (comp.TextField.text && comp.TextField.text.path) {
+                    const path = comp.TextField.text.path;
+                    input.id = path + "_input";
+                    input.value = dataModel[path] || "";
+                    input.oninput = (e) => {
+                        dataModel[path] = e.target.value;
+                    };
+                }
+                return div;
+            }
+            
+            if (comp.Image) {
+                const img = document.createElement('img');
+                img.src = comp.Image.url.literalString || "";
+                img.style.maxWidth = '100%';
+                img.style.maxHeight = '200px';
+                img.style.objectFit = comp.Image.fit || 'contain';
+                img.style.display = 'block';
+                img.style.marginBottom = '5px';
+                img.style.borderRadius = '4px';
+                return img;
+            }
+            
+            if (comp.Divider) {
+                const hr = document.createElement('hr');
+                hr.style.border = "none";
+                hr.style.borderTop = "1px solid #eee";
+                hr.style.margin = "8px 0";
+                return hr;
+            }
+            
+            const fallbackDiv = document.createElement('div');
+            fallbackDiv.style.border = '1px dashed #ffc107';
+            fallbackDiv.style.padding = '10px';
+            fallbackDiv.style.margin = '5px 0';
+            fallbackDiv.style.borderRadius = '4px';
+            fallbackDiv.style.background = '#fff8e1';
+            fallbackDiv.style.color = '#856404';
+            
+            const type = Object.keys(comp)[0] || "Unknown";
+            fallbackDiv.innerHTML = `<strong>[${type}]</strong> ${componentId}`;
+            return fallbackDiv;
+        }
+    </script>
+</body>
+</html>

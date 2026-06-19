@@ -6,6 +6,7 @@ import { handleAuthorize } from './auth/authorize.js';
 import { handleLogin } from './auth/login.js';
 import { handleToken } from './auth/token.js';
 import { handleJwks, handleAsMetadata } from './auth/metadata.js';
+import { handleDeviceAuthorization, handleDeviceGetPage, handleDevicePost } from './auth/device.js';
 
 async function main(): Promise<void> {
   await loadKeys();
@@ -37,6 +38,11 @@ async function main(): Promise<void> {
   app.get('/login', handleAuthorize); // same query contract; re-renders the form
   app.post('/login', handleLogin);
   app.post('/token', handleToken);
+
+  // Device Authorization Grant (RFC 8628) — used by the Sinch agent.
+  app.post('/device_authorization', handleDeviceAuthorization);
+  app.get('/device', handleDeviceGetPage);
+  app.post('/device', handleDevicePost);
 
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`[auth-server] listening on :${config.port} (issuer ${config.issuerUrl})`);

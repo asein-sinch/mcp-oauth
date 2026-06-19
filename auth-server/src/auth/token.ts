@@ -4,6 +4,7 @@ import { SignJWT } from 'jose';
 import { config } from '../config.js';
 import { getPrivateKey, SIGNING_ALG } from '../keys.js';
 import { consumeCode } from './store.js';
+import { pollDeviceToken } from './deviceStore.js';
 import { verifyPkceS256 } from './pkce.js';
 
 function tokenError(res: Response, status: number, error: string, description?: string): void {
@@ -33,9 +34,48 @@ function clientCredentials(req: Request): { id: string; secret: string } | null 
 
 export async function handleToken(req: Request, res: Response): Promise<void> {
   const body = req.body as Record<string, unknown>;
+  const grantType = String(body.grant_type ?? '');
 
-  if (String(body.grant_type ?? '') !== 'authorization_code') {
-    return tokenError(res, 400, 'unsupported_grant_type', 'Only authorization_code is supported');
+  // ── Device Authorization Grant (RFC 8628) ────────────────────────────────
+  if (grantType === 'urn:ietf:params:oauth:grant-type:device_code') {
+    const deviceCode = String(body.device_code ?? '');
+    const clientId = String(body.client_id ?? '');
+
+    if (!deviceCode || !clientId) {
+      return tokenError(res, 400, 'invalid_request', 'device_code and client_id are required');
+    }
+
+    const result = pollDeviceToken(deviceCode);
+    if (result === 'expired') {
+      return tokenError(res, 400, 'expired_token', 'The device code has expired');
+    }
+    if (result === null) {
+      return tokenError(res, 400, 'authorization_pending', 'The user has not yet authorized the device');
+    }
+
+    // User authorized — mint the same JWT as the auth-code flow.
+    const now = Math.floor(Date.now() / 1000);
+    const accessToken = await new SignJWT({ subproject_id: result.subprojectId, scope: result.scope })
+      .setProtectedHeader({ alg: SIGNING_ALG, kid: config.keyId, typ: 'JWT' })
+      .setIssuer(config.issuerUrl)
+      .setSubject(result.email!)
+      .setAudience(config.audience)
+      .setIssuedAt(now)
+      .setExpirationTime(now + config.accessTokenTtl)
+      .sign(getPrivateKey());
+
+    res.json({
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: config.accessTokenTtl,
+      scope: result.scope,
+    });
+    return;
+  }
+
+  // ── Authorization Code Grant ──────────────────────────────────────────────
+  if (grantType !== 'authorization_code') {
+    return tokenError(res, 400, 'unsupported_grant_type', 'Only authorization_code and device_code are supported');
   }
 
   // 1. Authenticate the client.

@@ -8,7 +8,7 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.genai import types
 
-from mcp_agent.agent import root_agent
+from sinch_messaging_agent.agent import root_agent
 
 @pytest.fixture(scope="function")
 def runner():
@@ -25,9 +25,7 @@ def runner():
 def test_agent_tool_calling(runner):
     """Test the agent tool calling flow with mocked Gemini responses."""
     async def run_test():
-        model_instance = root_agent.canonical_model
-        
-        # Turn 1: LLM decides to check the directory files
+        # Turn 1: LLM decides to send a message
         turn_1_response = types.GenerateContentResponse(
             candidates=[
                 types.Candidate(
@@ -38,8 +36,12 @@ def test_agent_tool_calling(runner):
                             types.Part(
                                 function_call=types.FunctionCall(
                                     id="fc-1",
-                                    name="list_directory",
-                                    args={"path": "."}
+                                    name="send-rcs-message",
+                                    args={
+                                        "to": "+33612345678",
+                                        "message": {"text_message": {"text": "Hello, this is a test campaign"}},
+                                        "appId": "default_app"
+                                    }
                                 )
                             )
                         ]
@@ -48,7 +50,7 @@ def test_agent_tool_calling(runner):
             ]
         )
         
-        # Turn 2: LLM summarizes the output once the directory listing is returned
+        # Turn 2: LLM summarizes the output once the delivery is confirmed
         turn_2_response = types.GenerateContentResponse(
             candidates=[
                 types.Candidate(
@@ -57,7 +59,7 @@ def test_agent_tool_calling(runner):
                         role="model",
                         parts=[
                             types.Part(
-                                text="I found the files: agent.py, __init__.py, and .env."
+                                text="RCS message sent successfully! Message ID: msg_123"
                             )
                         ]
                     )
@@ -89,7 +91,7 @@ def test_agent_tool_calling(runner):
                     new_message=types.Content(
                         role="user",
                         parts=[
-                            types.Part.from_text(text="What files are in the directory?")
+                            types.Part.from_text(text="Send campaign message to +33612345678")
                         ]
                     )
                 ):
@@ -108,14 +110,14 @@ def test_agent_tool_calling(runner):
                 for part in e.content.parts
                 if part.text
             ]
-            assert "I found the files: agent.py, __init__.py, and .env." in final_messages
+            assert any("RCS message sent successfully" in msg for msg in final_messages)
 
-            # Verify that the agent correctly called the 'list_directory' tool
+            # Verify that the agent correctly called the 'send-rcs-message' tool
             tool_calls = []
             for e in events:
                 if e.get_function_calls():
                     tool_calls.extend(e.get_function_calls())
             
-            assert any(tc.name == "list_directory" for tc in tool_calls)
+            assert any(tc.name == "send-rcs-message" for tc in tool_calls)
 
     asyncio.run(run_test())

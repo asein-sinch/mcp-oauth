@@ -7,7 +7,7 @@ import { z } from 'zod';
 
 const clientSchema = z.object({
   clientSecret: z.string().min(1),
-  redirectUris: z.array(z.string().url()).min(1),
+  redirectUris: z.array(z.string().url()).min(0), // empty array = device-flow-only client
 });
 
 const userSchema = z.object({

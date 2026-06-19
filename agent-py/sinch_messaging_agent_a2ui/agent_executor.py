@@ -1,0 +1,590 @@
+"""Agent executor for Sinch Messaging Agent with A2UI validation and per-user Sinch auth."""
+
+import json
+import logging
+import os
+import re
+import httpx
+from a2a import types
+from a2a import utils
+from a2a.server import agent_execution
+from a2a.server import events
+from a2a.server import tasks
+from a2a.utils import errors as a2a_errors
+from . import a2ui_schema
+from google.adk.agents.llm_agent import Agent
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams
+from google.adk import runners
+from google.adk.artifacts import in_memory_artifact_service
+from google.adk.memory import in_memory_memory_service
+from google.adk.sessions import in_memory_session_service
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.genai import types as genai_types
+import jsonschema
+
+logger = logging.getLogger(__name__)
+
+# ── Auth server config ────────────────────────────────────────────────────────
+SINCH_AUTH_SERVER = os.environ.get(
+    "SINCH_AUTH_SERVER_URL", "https://asein-sinch-oauth-server.sliplane.app"
+)
+SINCH_DEVICE_CLIENT_ID = os.environ.get("SINCH_DEVICE_CLIENT_ID", "sinch-agent")
+MCP_JWT_URL = os.environ.get(
+    "MCP_SERVER_URL", "https://asein-sinch-mcp-jwt.sliplane.app/mcp"
+)
+
+# ── A2UI auth card (rendered directly, no LLM needed) ────────────────────────
+def _build_auth_card(user_code: str, verification_uri: str) -> dict:
+  """Returns the A2UI JSON payload for the Sinch authentication prompt."""
+  return {
+      "a2ui_messages": [
+          {"beginRendering": {"surfaceId": "srf_sinch_auth", "root": "auth_card"}},
+          {
+              "surfaceUpdate": {
+                  "surfaceId": "srf_sinch_auth",
+                  "components": [
+                      {"id": "auth_card", "component": {"Card": {"child": "auth_col"}}},
+                      {
+                          "id": "auth_col",
+                          "component": {
+                              "Column": {
+                                  "children": {
+                                      "explicitList": [
+                                          "auth_title",
+                                          "auth_sub",
+                                          "code_label",
+                                          "code_box",
+                                          "auth_steps",
+                                          "auth_done_btn",
+                                      ]
+                                  }
+                              }
+                          },
+                      },
+                      {
+                          "id": "auth_title",
+                          "component": {
+                              "Text": {
+                                  "text": {"literalString": "🔐 Connect Your Sinch Account"},
+                                  "usageHint": "h2",
+                              }
+                          },
+                      },
+                      {
+                          "id": "auth_sub",
+                          "component": {
+                              "Text": {
+                                  "text": {
+                                      "literalString": (
+                                          "To access your Sinch project, please authenticate "
+                                          "using the one-time code below."
+                                      )
+                                  }
+                              }
+                          },
+                      },
+                      {
+                          "id": "code_label",
+                          "component": {
+                              "Text": {
+                                  "text": {"literalString": "Your one-time code:"},
+                                  "usageHint": "label",
+                              }
+                          },
+                      },
+                      {
+                          "id": "code_box",
+                          "component": {
+                              "Text": {
+                                  "text": {"literalString": f"🔑  {user_code}"},
+                                  "usageHint": "h3",
+                              }
+                          },
+                      },
+                      {
+                          "id": "auth_steps",
+                          "component": {
+                              "Text": {
+                                  "text": {
+                                      "literalString": (
+                                          f"1. Open: {verification_uri}\n"
+                                          f"2. Enter code: {user_code}\n"
+                                          "3. Sign in with your Sinch credentials\n"
+                                          "4. Click the button below when done"
+                                      )
+                                  }
+                              }
+                          },
+                      },
+                      {
+                          "id": "auth_done_btn",
+                          "component": {
+                              "Button": {
+                                  "child": "auth_done_txt",
+                                  "primary": True,
+                                  "action": {
+                                      "name": "submit",
+                                      "context": [
+                                          {
+                                              "key": "message",
+                                              "value": {
+                                                  "literalString": "I have connected my Sinch account"
+                                              },
+                                          }
+                                      ],
+                                  },
+                              }
+                          },
+                      },
+                      {
+                          "id": "auth_done_txt",
+                          "component": {
+                              "Text": {
+                                  "text": {"literalString": "✅ I've Connected My Account"}
+                              }
+                          },
+                      },
+                  ],
+              }
+          },
+      ]
+  }
+
+
+class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
+  """An agent executor for the Sinch Messaging Agent A2UI implementation."""
+
+  def __init__(self):
+    # Prepare A2UI schema validator
+    try:
+      single_message_schema = json.loads(a2ui_schema.A2UI_SCHEMA)
+      self.a2ui_schema_object = {
+          "type": "array",
+          "items": single_message_schema,
+      }
+      logger.info("[DEBUG] A2UI_SCHEMA successfully loaded.")
+    except Exception as e:
+      logger.error("[DEBUG] Failed to parse A2UI_SCHEMA: %s", e)
+      self.a2ui_schema_object = None
+
+    # Session service — persists across container replicas on Agent Engine.
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    agent_engine_id = (
+        os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+        or os.environ.get("K_SERVICE")
+    )
+
+    if project and agent_engine_id:
+      logger.info(
+          "[DEBUG] Using VertexAiSessionService (project=%s, location=%s, engine=%s)",
+          project, location, agent_engine_id,
+      )
+      self._session_svc = VertexAiSessionService(
+          project=project,
+          location=location,
+          agent_engine_id=agent_engine_id,
+      )
+    else:
+      logger.info("[DEBUG] Falling back to InMemorySessionService (local dev)")
+      self._session_svc = in_memory_session_service.InMemorySessionService()
+
+    self._user_id = "remote_agent"
+    self._app_name = "sinch_messaging_agent"
+
+  # ── Runner factory ────────────────────────────────────────────────────────
+  def _create_runner(self, sinch_token: str | None) -> runners.Runner:
+    """Create a Runner whose MCP toolset carries the user's Bearer token."""
+    from sinch_messaging_agent_a2ui.agent import root_agent as base_agent
+
+    headers = {}
+    if sinch_token:
+      headers["Authorization"] = f"Bearer {sinch_token}"
+
+    mcp_toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url=MCP_JWT_URL,
+            timeout=15.0,
+            headers=headers,
+        ),
+    )
+
+    # Re-create the agent with the per-user MCP toolset.
+    from google.adk.agents.llm_agent import Agent as LLMAgent
+    agent = LLMAgent(
+        model=base_agent.model,
+        name=base_agent.name,
+        description=base_agent.description,
+        instruction=base_agent.instruction,
+        tools=[mcp_toolset],
+    )
+
+    return runners.Runner(
+        app_name=self._app_name,
+        agent=agent,
+        session_service=self._session_svc,
+        artifact_service=in_memory_artifact_service.InMemoryArtifactService(),
+        memory_service=in_memory_memory_service.InMemoryMemoryService(),
+    )
+
+  # ── Sinch auth helpers ────────────────────────────────────────────────────
+  async def _initiate_device_auth(self) -> dict | None:
+    """Call /device_authorization on the auth server. Returns parsed JSON or None."""
+    try:
+      async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{SINCH_AUTH_SERVER}/device_authorization",
+            data={"client_id": SINCH_DEVICE_CLIENT_ID},
+        )
+        if resp.status_code == 200:
+          return resp.json()
+        logger.error("[AUTH] device_authorization failed: %s %s", resp.status_code, resp.text)
+    except Exception as e:
+      logger.error("[AUTH] device_authorization error: %s", e)
+    return None
+
+  async def _poll_device_token(self, device_code: str) -> str | None:
+    """Poll /token for a device_code grant. Returns access_token or None if pending."""
+    try:
+      async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{SINCH_AUTH_SERVER}/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": SINCH_DEVICE_CLIENT_ID,
+            },
+        )
+        if resp.status_code == 200:
+          return resp.json().get("access_token")
+        body = resp.json()
+        if body.get("error") == "authorization_pending":
+          return None  # user hasn't logged in yet
+        logger.warning("[AUTH] poll_device_token unexpected response: %s", body)
+    except Exception as e:
+      logger.error("[AUTH] poll_device_token error: %s", e)
+    return None
+
+  async def _send_auth_card(
+      self,
+      updater: tasks.TaskUpdater,
+      user_code: str,
+      verification_uri: str,
+  ) -> None:
+    """Send the auth card A2UI response without invoking the LLM."""
+    await updater.start_work()
+    auth_json = _build_auth_card(user_code, verification_uri)
+    a2ui_messages = auth_json["a2ui_messages"]
+
+    parts = [
+        types.Part(
+            root=types.TextPart(
+                text=(
+                    f"To access your Sinch account, please authenticate:\n"
+                    f"1. Open: {verification_uri}\n"
+                    f"2. Enter code: **{user_code}**\n"
+                    "3. Sign in with your Sinch credentials\n"
+                    "4. Click 'I've Connected My Account' when done."
+                )
+            )
+        )
+    ]
+    begin = next((m for m in a2ui_messages if "beginRendering" in m), None)
+    if begin:
+      parts.append(
+          types.Part(
+              root=types.DataPart(
+                  data=begin,
+                  metadata={"mimeType": "application/json+a2ui"},
+              )
+          )
+      )
+    for msg in a2ui_messages:
+      if "beginRendering" in msg:
+        continue
+      parts.append(
+          types.Part(
+              root=types.DataPart(
+                  data=msg,
+                  metadata={"mimeType": "application/json+a2ui"},
+              )
+          )
+      )
+    await updater.add_artifact(parts, name="response")
+    await updater.complete()
+
+  # ── Main execute ──────────────────────────────────────────────────────────
+  async def execute(
+      self,
+      context: agent_execution.RequestContext,
+      event_queue: events.EventQueue,
+  ) -> None:
+    query = context.get_user_input()
+    task = context.current_task
+    logger.info("[DEBUG] Query: %s", query)
+
+    if not task:
+      if not context.message:
+        return
+      task = utils.new_task(context.message)
+      await event_queue.enqueue_event(task)
+
+    updater = tasks.TaskUpdater(event_queue, task.id, task.context_id)
+    session_id = task.context_id
+
+    session = await self._session_svc.get_session(
+        app_name=self._app_name,
+        user_id=self._user_id,
+        session_id=session_id,
+    )
+    if session is None:
+      session = await self._session_svc.create_session(
+          app_name=self._app_name,
+          user_id=self._user_id,
+          state={},
+          session_id=session_id,
+      )
+
+    # 1. SESSION RECOVERY: Parse userAction inputs/context from incoming parts
+    try:
+      if hasattr(context, "message") and context.message and hasattr(context.message, "parts"):
+        for part in context.message.parts:
+          if hasattr(part, "root") and hasattr(part.root, "data"):
+            data = part.root.data
+            if isinstance(data, dict) and "userAction" in data:
+              user_action = data["userAction"]
+
+              raw_context = user_action.get("context", [])
+              ctx_dict = {}
+              if isinstance(raw_context, list):
+                for item in raw_context:
+                  if isinstance(item, dict) and "key" in item:
+                    ctx_dict[item["key"]] = item.get("value", "")
+              elif isinstance(raw_context, dict):
+                ctx_dict = raw_context
+
+              if "message" in ctx_dict:
+                query = ctx_dict["message"]
+
+              for k, v in ctx_dict.items():
+                if k != "message" and v:
+                  session.state[k] = v
+                  logger.info("[DEBUG] Recovered context key %s: %s", k, v)
+
+              for item in user_action.get("inputs", []):
+                if item.get("id") and item.get("value") is not None:
+                  session.state[item["id"]] = item["value"]
+                  logger.info("[DEBUG] Recovered input %s: %s", item["id"], item["value"])
+
+    except Exception as e:
+      logger.warning("[DEBUG] Context recovery failed: %s", e)
+
+    # ── 2. SINCH AUTH GATE ────────────────────────────────────────────────
+    sinch_token: str | None = session.state.get("sinch_token")
+    sinch_device_code: str | None = session.state.get("sinch_device_code")
+
+    if not sinch_token and sinch_device_code:
+      # User may have just logged in — poll the auth server.
+      logger.info("[AUTH] Polling for device token...")
+      sinch_token = await self._poll_device_token(sinch_device_code)
+      if sinch_token:
+        logger.info("[AUTH] ✅ Token received — storing in session.")
+        session.state["sinch_token"] = sinch_token
+        session.state.pop("sinch_device_code", None)
+        session.state.pop("sinch_user_code", None)
+        session.state.pop("sinch_verification_uri", None)
+      else:
+        # Still pending — re-show the auth card.
+        user_code = session.state.get("sinch_user_code", "SINCH-????")
+        verification_uri = session.state.get(
+            "sinch_verification_uri",
+            f"{SINCH_AUTH_SERVER}/device",
+        )
+        logger.info("[AUTH] Still pending, re-showing auth card.")
+        await self._send_auth_card(updater, user_code, verification_uri)
+        return
+
+    if not sinch_token:
+      # No token at all — initiate device auth.
+      logger.info("[AUTH] No Sinch token — initiating device authorization flow.")
+      device_resp = await self._initiate_device_auth()
+      if device_resp:
+        session.state["sinch_device_code"] = device_resp["device_code"]
+        session.state["sinch_user_code"] = device_resp["user_code"]
+        session.state["sinch_verification_uri"] = device_resp["verification_uri"]
+        await self._send_auth_card(
+            updater,
+            device_resp["user_code"],
+            device_resp["verification_uri"],
+        )
+      else:
+        await updater.start_work()
+        await updater.add_artifact(
+            [types.Part(root=types.TextPart(text="⚠️ Unable to reach the Sinch auth server. Please try again."))],
+            name="response",
+        )
+        await updater.complete()
+      return
+
+    # ── 3. STATE INJECTION: Append session state to query ────────────────
+    state_str = ", ".join([
+        f"{k}={v}" for k, v in session.state.items()
+        if k not in ("sinch_token", "sinch_device_code", "sinch_user_code", "sinch_verification_uri")
+    ])
+    if state_str:
+      query = f"{query} [Collected data: {state_str}]"
+      logger.info("[DEBUG] Injected state to query: %s", query)
+
+    # ── 4. LLM CALL with per-user runner ─────────────────────────────────
+    runner = self._create_runner(sinch_token)
+
+    current_query_text = query
+    max_retries = 1
+    attempt = 0
+
+    await updater.start_work()
+
+    while attempt <= max_retries:
+      attempt += 1
+      content = genai_types.Content(
+          role="user", parts=[{"text": current_query_text}]
+      )
+      final_response_content = None
+
+      logger.info("[DEBUG] attempt: %s", attempt)
+
+      try:
+        async for event in runner.run_async(
+            user_id=self._user_id, session_id=session.id, new_message=content
+        ):
+          if event.is_final_response():
+            if (
+                event.content
+                and event.content.parts
+                and event.content.parts[0].text
+            ):
+              final_response_content = "\n".join(
+                  [p.text for p in event.content.parts if p.text]
+              )
+              logger.info(
+                  "[DEBUG] Final response content: %s", final_response_content
+              )
+      except Exception as e:
+        await updater.failed(
+            message=utils.new_agent_text_message(
+                f"Task failed with error: {str(e)}"
+            )
+        )
+        return
+
+      if final_response_content is None:
+        if attempt <= max_retries:
+          current_query_text = "I received no response. Please try again."
+          continue
+        else:
+          await updater.failed(
+              message=utils.new_agent_text_message("No response generated.")
+          )
+          return
+
+      is_valid = False
+      error_message = ""
+      json_string_cleaned = "[]"
+      text_part = final_response_content
+
+      if "---a2ui_JSON---" not in final_response_content:
+        error_message = "Delimiter '---a2ui_JSON---' not found."
+      else:
+        try:
+          text_part, json_string = final_response_content.split(
+              "---a2ui_JSON---", 1
+          )
+          json_string_cleaned = (
+              json_string.strip().lstrip("```json").rstrip("```").strip()
+          )
+          if not json_string_cleaned:
+            json_string_cleaned = "[]"
+
+          parsed_json_obj = json.loads(json_string_cleaned)
+          parsed_json = parsed_json_obj.get("a2ui_messages", [])
+          logger.info("[DEBUG] Parsed JSON array: %s", parsed_json)
+
+          if self.a2ui_schema_object:
+            jsonschema.validate(
+                instance=parsed_json, schema=self.a2ui_schema_object
+            )
+          is_valid = True
+        except Exception as e:
+          error_message = f"Validation failed: {str(e)}"
+
+      if is_valid:
+        parts = []
+        if text_part.strip():
+          parts.append(types.Part(root=types.TextPart(text=text_part.strip())))
+
+        logger.info("[DEBUG] UI JSON: %s", json_string_cleaned)
+        json_data = json.loads(json_string_cleaned).get("a2ui_messages", [])
+
+        begin_rendering_msg = next((m for m in json_data if "beginRendering" in m), None)
+        if begin_rendering_msg:
+          parts.append(
+              types.Part(
+                  root=types.DataPart(
+                      data=begin_rendering_msg,
+                      metadata={"mimeType": "application/json+a2ui"},
+                  )
+              )
+          )
+
+        for message in json_data:
+          if "beginRendering" in message:
+            continue
+          parts.append(
+              types.Part(
+                  root=types.DataPart(
+                      data=message,
+                      metadata={"mimeType": "application/json+a2ui"},
+                  )
+              )
+          )
+
+        logger.info("[DEBUG] Generated A2A Parts: %s", parts)
+        await updater.add_artifact(parts, name="response")
+        await updater.complete()
+        return
+      else:
+        if attempt <= max_retries:
+          current_query_text = (
+              f"Your previous response was invalid. {error_message} You MUST"
+              " generate a valid response that strictly follows the A2UI JSON"
+              f" SCHEMA. Please retry the original request: '{query}'"
+          )
+          logger.warning(
+              "[DEBUG] Retrying due to validation error: %s", error_message
+          )
+          continue
+        else:
+          await updater.add_artifact(
+              [
+                  types.Part(
+                      root=types.TextPart(
+                          text=(
+                              "I encountered an error generating the UI:"
+                              f" {error_message}. Here is the raw response:"
+                              f" {final_response_content}"
+                          )
+                      )
+                  )
+              ],
+              name="error_response",
+          )
+          await updater.complete()
+          return
+
+  async def cancel(
+      self,
+      context: agent_execution.RequestContext,
+      event_queue: events.EventQueue,
+  ) -> None:
+    raise a2a_errors.ServerError(error=types.UnsupportedOperationError())
