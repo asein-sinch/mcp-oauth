@@ -491,10 +491,12 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
 
     # Check the auth server's token cache first — this survives context_id
     # changes between button clicks in GE (each click may use a new context_id).
-    if not sinch_token:
-      sinch_token = await self._check_cached_token()
-      if sinch_token:
-        await self._persist_state(session, {"sinch_token": sinch_token})
+    # NOTE: disabled for demo recording so every new GE chat shows the auth flow.
+    # Re-enable by uncommenting the block below.
+    # if not sinch_token:
+    #   sinch_token = await self._check_cached_token()
+    #   if sinch_token:
+    #     await self._persist_state(session, {"sinch_token": sinch_token})
 
     if not sinch_token:
       logger.info("[AUTH] No Sinch token — calling device_authorization (idempotent).")
