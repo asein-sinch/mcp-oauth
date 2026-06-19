@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { Request, Response } from 'express';
 import { config } from '../config.js';
 import { verifyCredentials } from '../users.js';
-import { storeDeviceCode, generateUserCode, getByUserCode, authorizeDevice } from './deviceStore.js';
+import { storeDeviceCode, generateUserCode, getByUserCode, authorizeDevice, getByContextId } from './deviceStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEVICE_TEMPLATE = readFileSync(join(__dirname, '..', 'views', 'device.html'), 'utf8');
@@ -40,11 +40,33 @@ export function handleDeviceAuthorization(req: Request, res: Response): void {
     return;
   }
 
-  const deviceCode = nanoid(48);
-  const userCode = generateUserCode();
+  const contextId = String(body.context_id ?? '').trim();
   const scope = String(body.scope ?? '');
 
-  storeDeviceCode(deviceCode, { userCode, clientId, scope, status: 'pending' });
+  // Idempotent: if this context already has a pending record, return it.
+  if (contextId) {
+    const existing = getByContextId(contextId);
+    if (existing) {
+      res.json({
+        device_code: existing.deviceCode,
+        user_code: existing.record.userCode,
+        verification_uri: `${config.issuerUrl}/device`,
+        verification_uri_complete: `${config.issuerUrl}/device?user_code=${encodeURIComponent(existing.record.userCode)}`,
+        expires_in: Math.max(0, Math.floor((existing.record.expiresAt - Date.now()) / 1000)),
+        interval: 5,
+      });
+      return;
+    }
+  }
+
+  const deviceCode = nanoid(48);
+  const userCode = generateUserCode();
+
+  storeDeviceCode(
+    deviceCode,
+    { userCode, clientId, scope, status: 'pending' },
+    contextId || undefined,
+  );
 
   res.json({
     device_code: deviceCode,

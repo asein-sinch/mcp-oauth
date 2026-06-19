@@ -77,6 +77,10 @@ def main():
         agent_executor_builder=AdkAgentToA2AExecutor,
     )
     
+    # Existing Reasoning Engine ID — update in-place, no new ID created
+    REASONING_ENGINE_ID = "3590519541932752896"
+    existing_resource_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{REASONING_ENGINE_ID}"
+
     # Deploy config with requirements and extra packages
     config = {
         "staging_bucket": bucket,
@@ -90,11 +94,18 @@ def main():
             "jsonschema==4.26.0",
             "referencing==0.37.0",
             "mcp==1.27.2",
+            "httpx==0.28.1",
         ],
         "env_vars": {
             "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
             "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true",
-            "MCP_SERVER_URL": "https://asein-sinch-mcp-no-auth.sliplane.app/mcp",
+            # ── Session persistence: required for VertexAiSessionService ──
+            "SINCH_AGENT_ENGINE_ID": REASONING_ENGINE_ID,
+            # ── MCP server (JWT-authenticated) ────────────────────────────
+            "MCP_SERVER_URL": "https://asein-sinch-mcp-jwt.sliplane.app/mcp",
+            # ── Sinch auth server (Device Authorization Grant) ────────────
+            "SINCH_AUTH_SERVER_URL": "https://asein-sinch-oauth-server.sliplane.app",
+            "SINCH_DEVICE_CLIENT_ID": "sinch-agent",
         },
         "extra_packages": [
             "sinch_messaging_agent_a2ui",
@@ -102,10 +113,6 @@ def main():
         ]
     }
     
-    # Existing Reasoning Engine ID — update in-place, no new ID created
-    REASONING_ENGINE_ID = "3590519541932752896"
-    existing_resource_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{REASONING_ENGINE_ID}"
-
     print(f"Updating existing instance: {existing_resource_name}")
     remote_agent = client.agent_engines.update(
         name=existing_resource_name,

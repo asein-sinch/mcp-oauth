@@ -3,11 +3,13 @@
 import json
 import logging
 import os
-import re
+import time
 import httpx
 from a2a import types
 from a2a import utils
 from a2a.server import agent_execution
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from a2a.server import events
 from a2a.server import tasks
 from a2a.utils import errors as a2a_errors
@@ -33,16 +35,44 @@ SINCH_DEVICE_CLIENT_ID = os.environ.get("SINCH_DEVICE_CLIENT_ID", "sinch-agent")
 MCP_JWT_URL = os.environ.get(
     "MCP_SERVER_URL", "https://asein-sinch-mcp-jwt.sliplane.app/mcp"
 )
+# All surface IDs the LLM may use (must match the templates in agent.py).
+_KNOWN_SURFACE_IDS = [
+    "srf_welcome",
+    "srf_ob1", "srf_ob2", "srf_ob3",
+    "srf_ob_warn", "srf_ob_testers", "srf_ob_done",
+    "srf_campaign", "srf_campaign_send",
+    "srf_insights",
+]
+
+
+def _uniquify_surface_ids(a2ui_messages: list, ts: int) -> list:
+  """Replace every known static surfaceId with a timestamp-suffixed version.
+
+  The LLM outputs stable base IDs (e.g. 'srf_campaign'). This function rewrites
+  them to 'srf_campaign_<ts>' so each LLM turn produces a distinct A2UI surface
+  and never overwrites a previous card in the same conversation.
+  """
+  raw = json.dumps(a2ui_messages)
+  for sid in _KNOWN_SURFACE_IDS:
+    # Match the exact quoted string to avoid partial replacements.
+    raw = raw.replace(f'"{sid}"', f'"{sid}_{ts}"')
+  return json.loads(raw)
+
 
 # ── A2UI auth card (rendered directly, no LLM needed) ────────────────────────
-def _build_auth_card(user_code: str, verification_uri: str) -> dict:
-  """Returns the A2UI JSON payload for the Sinch authentication prompt."""
+
+def _build_auth_card(user_code: str, verification_uri: str) -> tuple[dict, str]:
+  """Returns (A2UI JSON payload, surface_id) for the Sinch authentication prompt.
+  A unique timestamp suffix ensures each invocation creates a NEW surface
+  instead of overwriting the previous auth card in the conversation.
+  """
+  surface_id = f"srf_sinch_auth_{int(time.time())}"
   return {
       "a2ui_messages": [
-          {"beginRendering": {"surfaceId": "srf_sinch_auth", "root": "auth_card"}},
+          {"beginRendering": {"surfaceId": surface_id, "root": "auth_card"}},
           {
               "surfaceUpdate": {
-                  "surfaceId": "srf_sinch_auth",
+                  "surfaceId": surface_id,
                   "components": [
                       {"id": "auth_card", "component": {"Card": {"child": "auth_col"}}},
                       {
@@ -149,7 +179,7 @@ def _build_auth_card(user_code: str, verification_uri: str) -> dict:
               }
           },
       ]
-  }
+  }, surface_id
 
 
 class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
@@ -172,8 +202,8 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     project = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
     agent_engine_id = (
-        os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID")
-        or os.environ.get("K_SERVICE")
+        os.environ.get("SINCH_AGENT_ENGINE_ID")       # explicit env var (non-reserved)
+        or os.environ.get("K_SERVICE")                 # fallback: Cloud Run service name
     )
 
     if project and agent_engine_id:
@@ -194,48 +224,79 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     self._app_name = "sinch_messaging_agent"
 
   # ── Runner factory ────────────────────────────────────────────────────────
-  def _create_runner(self, sinch_token: str | None) -> runners.Runner:
-    """Create a Runner whose MCP toolset carries the user's Bearer token."""
-    from sinch_messaging_agent_a2ui.agent import root_agent as base_agent
+  def _create_runner(self, sinch_token: str | None) -> runners.Runner | None:
+    """Create a Runner whose MCP toolset carries the user's Bearer token.
+    Returns None on failure.
+    """
+    try:
+      from sinch_messaging_agent_a2ui.agent import root_agent as base_agent
 
-    headers = {}
-    if sinch_token:
-      headers["Authorization"] = f"Bearer {sinch_token}"
+      headers = {}
+      if sinch_token:
+        headers["Authorization"] = f"Bearer {sinch_token}"
 
-    mcp_toolset = McpToolset(
-        connection_params=StreamableHTTPConnectionParams(
-            url=MCP_JWT_URL,
-            timeout=15.0,
-            headers=headers,
-        ),
-    )
+      mcp_toolset = McpToolset(
+          connection_params=StreamableHTTPConnectionParams(
+              url=MCP_JWT_URL,
+              timeout=15.0,
+              headers=headers,
+          ),
+      )
 
-    # Re-create the agent with the per-user MCP toolset.
-    from google.adk.agents.llm_agent import Agent as LLMAgent
-    agent = LLMAgent(
-        model=base_agent.model,
-        name=base_agent.name,
-        description=base_agent.description,
-        instruction=base_agent.instruction,
-        tools=[mcp_toolset],
-    )
+      from google.adk.agents.llm_agent import Agent as LLMAgent
+      agent = LLMAgent(
+          model=base_agent.model,
+          name=base_agent.name,
+          description=base_agent.description,
+          instruction=base_agent.instruction,
+          tools=[mcp_toolset],
+      )
 
-    return runners.Runner(
-        app_name=self._app_name,
-        agent=agent,
-        session_service=self._session_svc,
-        artifact_service=in_memory_artifact_service.InMemoryArtifactService(),
-        memory_service=in_memory_memory_service.InMemoryMemoryService(),
-    )
+      return runners.Runner(
+          app_name=self._app_name,
+          agent=agent,
+          session_service=self._session_svc,
+          artifact_service=in_memory_artifact_service.InMemoryArtifactService(),
+          memory_service=in_memory_memory_service.InMemoryMemoryService(),
+      )
+    except Exception as e:
+      logger.error("[RUNNER] Failed to create runner: %s", e)
+      return None
+
+  # ── Session persistence helper ───────────────────────────────────────────
+  async def _persist_state(self, session, delta: dict) -> None:
+    """Persist state changes to the session service.
+    Falls back to in-memory-only if the remote persist fails (e.g. invalid session ID).
+    """
+    for k, v in delta.items():
+      if v is None:
+        session.state.pop(k, None)
+      else:
+        session.state[k] = v
+    try:
+      event = Event(
+          author="agent",
+          actions=EventActions(state_delta=delta),
+      )
+      await self._session_svc.append_event(session, event)
+      logger.info("[AUTH] State delta persisted to session service: %s", list(delta.keys()))
+    except Exception as e:
+      logger.warning(
+          "[AUTH] Could not persist state to session service (in-memory only): %s", e
+      )
 
   # ── Sinch auth helpers ────────────────────────────────────────────────────
-  async def _initiate_device_auth(self) -> dict | None:
-    """Call /device_authorization on the auth server. Returns parsed JSON or None."""
+  async def _initiate_device_auth(self, context_id: str) -> dict | None:
+    """Call /device_authorization on the auth server.
+    Passes context_id so the auth server returns the SAME user_code for this
+    conversation on every call (idempotent — no session state needed).
+    Returns parsed JSON or None.
+    """
     try:
       async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{SINCH_AUTH_SERVER}/device_authorization",
-            data={"client_id": SINCH_DEVICE_CLIENT_ID},
+            data={"client_id": SINCH_DEVICE_CLIENT_ID, "context_id": context_id},
         )
         if resp.status_code == 200:
           return resp.json()
@@ -274,7 +335,7 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
   ) -> None:
     """Send the auth card A2UI response without invoking the LLM."""
     await updater.start_work()
-    auth_json = _build_auth_card(user_code, verification_uri)
+    auth_json, _surface_id = _build_auth_card(user_code, verification_uri)
     a2ui_messages = auth_json["a2ui_messages"]
 
     parts = [
@@ -316,6 +377,29 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
 
   # ── Main execute ──────────────────────────────────────────────────────────
   async def execute(
+      self,
+      context: agent_execution.RequestContext,
+      event_queue: events.EventQueue,
+  ) -> None:
+    try:
+      await self._execute_inner(context, event_queue)
+    except Exception as e:
+      logger.error("[EXECUTOR] Unhandled exception in execute(): %s", e, exc_info=True)
+      # Best-effort: report a failure so GE doesn't hang indefinitely.
+      try:
+        task = context.current_task
+        if task:
+          updater = tasks.TaskUpdater(event_queue, task.id, task.context_id)
+          await updater.start_work()
+          await updater.add_artifact(
+              [types.Part(root=types.TextPart(text=f"⚠️ Internal error: {e}"))],
+              name="error",
+          )
+          await updater.complete()
+      except Exception:
+        pass
+
+  async def _execute_inner(
       self,
       context: agent_execution.RequestContext,
       event_queue: events.EventQueue,
@@ -381,51 +465,41 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       logger.warning("[DEBUG] Context recovery failed: %s", e)
 
     # ── 2. SINCH AUTH GATE ────────────────────────────────────────────────
+    # Strategy: context_id (always available from the task, no session lookup)
+    # is passed to /device_authorization as a stable key. The auth server
+    # returns the SAME user_code for the same context_id across all A2A turns,
+    # so we never need to persist sinch_device_code in session state.
     sinch_token: str | None = session.state.get("sinch_token")
-    sinch_device_code: str | None = session.state.get("sinch_device_code")
-
-    if not sinch_token and sinch_device_code:
-      # User may have just logged in — poll the auth server.
-      logger.info("[AUTH] Polling for device token...")
-      sinch_token = await self._poll_device_token(sinch_device_code)
-      if sinch_token:
-        logger.info("[AUTH] ✅ Token received — storing in session.")
-        session.state["sinch_token"] = sinch_token
-        session.state.pop("sinch_device_code", None)
-        session.state.pop("sinch_user_code", None)
-        session.state.pop("sinch_verification_uri", None)
-      else:
-        # Still pending — re-show the auth card.
-        user_code = session.state.get("sinch_user_code", "SINCH-????")
-        verification_uri = session.state.get(
-            "sinch_verification_uri",
-            f"{SINCH_AUTH_SERVER}/device",
-        )
-        logger.info("[AUTH] Still pending, re-showing auth card.")
-        await self._send_auth_card(updater, user_code, verification_uri)
-        return
 
     if not sinch_token:
-      # No token at all — initiate device auth.
-      logger.info("[AUTH] No Sinch token — initiating device authorization flow.")
-      device_resp = await self._initiate_device_auth()
-      if device_resp:
-        session.state["sinch_device_code"] = device_resp["device_code"]
-        session.state["sinch_user_code"] = device_resp["user_code"]
-        session.state["sinch_verification_uri"] = device_resp["verification_uri"]
-        await self._send_auth_card(
-            updater,
-            device_resp["user_code"],
-            device_resp["verification_uri"],
-        )
-      else:
+      logger.info("[AUTH] No Sinch token — calling device_authorization (idempotent).")
+      device_resp = await self._initiate_device_auth(context_id=session_id)
+      if not device_resp:
         await updater.start_work()
         await updater.add_artifact(
-            [types.Part(root=types.TextPart(text="⚠️ Unable to reach the Sinch auth server. Please try again."))],
+            [types.Part(root=types.TextPart(
+                text="⚠️ Unable to reach the Sinch auth server. Please try again."
+            ))],
             name="response",
         )
         await updater.complete()
-      return
+        return
+
+      device_code = device_resp["device_code"]
+      user_code = device_resp["user_code"]
+      verification_uri = device_resp["verification_uri"]
+
+      # Try to exchange the device_code for a token (user may have already logged in).
+      sinch_token = await self._poll_device_token(device_code)
+
+      if sinch_token:
+        logger.info("[AUTH] ✅ Token obtained — persisting to session.")
+        await self._persist_state(session, {"sinch_token": sinch_token})
+      else:
+        # Still pending — show the auth card with the stable user_code.
+        logger.info("[AUTH] Auth pending — showing auth card (user_code=%s).", user_code)
+        await self._send_auth_card(updater, user_code, verification_uri)
+        return
 
     # ── 3. STATE INJECTION: Append session state to query ────────────────
     state_str = ", ".join([
@@ -438,6 +512,16 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
 
     # ── 4. LLM CALL with per-user runner ─────────────────────────────────
     runner = self._create_runner(sinch_token)
+    if runner is None:
+      await updater.start_work()
+      await updater.add_artifact(
+          [types.Part(root=types.TextPart(
+              text="⚠️ Failed to initialise the Sinch MCP connection. Please try again."
+          ))],
+          name="error",
+      )
+      await updater.complete()
+      return
 
     current_query_text = query
     max_retries = 1
@@ -508,6 +592,13 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
 
           parsed_json_obj = json.loads(json_string_cleaned)
           parsed_json = parsed_json_obj.get("a2ui_messages", [])
+
+          # Make every surfaceId unique so this turn's cards never overwrite
+          # cards from previous turns that used the same template.
+          ts = int(time.time())
+          parsed_json = _uniquify_surface_ids(parsed_json, ts)
+          json_string_cleaned = json.dumps({"a2ui_messages": parsed_json})
+
           logger.info("[DEBUG] Parsed JSON array: %s", parsed_json)
 
           if self.a2ui_schema_object:
