@@ -608,7 +608,15 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       text_part = final_response_content
 
       if "---a2ui_JSON---" not in final_response_content:
-        error_message = "Delimiter '---a2ui_JSON---' not found."
+        # No delimiter → the LLM chose to return a text-only response (valid for
+        # mid-workflow conversational turns). Pass it through directly.
+        logger.info("[DEBUG] No A2UI delimiter — sending text-only response.")
+        await updater.add_artifact(
+            [types.Part(root=types.TextPart(text=final_response_content.strip()))],
+            name="response",
+        )
+        await updater.complete()
+        return
       else:
         try:
           text_part, json_string = final_response_content.split(
