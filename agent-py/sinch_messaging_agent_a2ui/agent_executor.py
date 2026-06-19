@@ -1,5 +1,6 @@
 """Agent executor for Sinch Messaging Agent with A2UI validation and per-user Sinch auth."""
 
+import asyncio
 import json
 import logging
 import os
@@ -534,7 +535,7 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       query = f"{query} [Collected data: {state_str}]"
       logger.info("[DEBUG] Injected state to query: %s", query)
 
-    # ── 4. LLM CALL with per-user runner ─────────────────────────────────
+    # ── 4. LLM CALL with per-user runner ──────────────────────────────
     runner = self._create_runner(sinch_token)
     if runner is None:
       await updater.start_work()
@@ -550,6 +551,7 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     current_query_text = query
     max_retries = 1
     attempt = 0
+    RUNNER_TIMEOUT_SECS = 90  # prevent infinite hang on MCP tool call delays
 
     await updater.start_work()
 
@@ -562,27 +564,31 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
 
       logger.info("[DEBUG] attempt: %s", attempt)
 
+      # ── Run with hard timeout to prevent MCP tool-call hangs ────────────
+      run_error: str | None = None
       try:
-        async for event in runner.run_async(
-            user_id=self._user_id, session_id=session.id, new_message=content
-        ):
-          if event.is_final_response():
-            if (
-                event.content
-                and event.content.parts
-                and event.content.parts[0].text
-            ):
-              final_response_content = "\n".join(
-                  [p.text for p in event.content.parts if p.text]
-              )
-              logger.info(
-                  "[DEBUG] Final response content: %s", final_response_content
-              )
+        async def _collect_response() -> str | None:
+          async for event in runner.run_async(
+              user_id=self._user_id, session_id=session.id, new_message=content
+          ):
+            if event.is_final_response():
+              if event.content and event.content.parts:
+                return "\n".join([p.text for p in event.content.parts if p.text])
+          return None
+
+        final_response_content = await asyncio.wait_for(
+            _collect_response(), timeout=RUNNER_TIMEOUT_SECS
+        )
+      except asyncio.TimeoutError:
+        run_error = f"⏱️ The Sinch agent timed out after {RUNNER_TIMEOUT_SECS}s (MCP server may be slow). Please try again."
+        logger.warning("[DEBUG] Runner timed out after %ss", RUNNER_TIMEOUT_SECS)
       except Exception as e:
+        run_error = f"Task failed with error: {str(e)}"
+        logger.error("[DEBUG] Runner error: %s", e)
+
+      if run_error:
         await updater.failed(
-            message=utils.new_agent_text_message(
-                f"Task failed with error: {str(e)}"
-            )
+            message=utils.new_agent_text_message(run_error)
         )
         return
 
