@@ -7,6 +7,7 @@ import { handleLogin } from './auth/login.js';
 import { handleToken, handleTokenCached } from './auth/token.js';
 import { handleJwks, handleAsMetadata } from './auth/metadata.js';
 import { handleDeviceAuthorization, handleDeviceGetPage, handleDevicePost } from './auth/device.js';
+import { handleRegister } from './auth/register.js';
 
 async function main(): Promise<void> {
   await loadKeys();
@@ -38,6 +39,9 @@ async function main(): Promise<void> {
   app.get('/login', handleAuthorize); // same query contract; re-renders the form
   app.post('/login', handleLogin);
   app.post('/token', handleToken);
+
+  // Dynamic Client Registration (RFC 7591) — used by MCP clients like MCPJam.
+  app.post('/register', handleRegister);
 
   // Device Authorization Grant (RFC 8628) — used by the Sinch agent.
   app.post('/device_authorization', handleDeviceAuthorization);

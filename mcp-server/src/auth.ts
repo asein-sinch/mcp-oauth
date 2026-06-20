@@ -53,7 +53,20 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
 
     const token = bearer(req);
-    if (!token) return unauthorized(res, 'missing bearer token');
+    if (!token) {
+      if (config.authMode === 'jwt') {
+        // First unauthenticated request: advertise resource_metadata so MCP clients can
+        // auto-discover the auth server (RFC 9728 + MCP OAuth spec).
+        const base = `${req.protocol}://${req.get('host')}`;
+        res
+          .set('WWW-Authenticate',
+               `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"`)
+          .status(401)
+          .json({ error: 'unauthorized', error_description: 'missing bearer token' });
+        return;
+      }
+      return unauthorized(res, 'missing bearer token');
+    }
 
     if (config.authMode === 'static-token') {
       // base64("projectId:accessKey:accessSecret") — split on the first two colons so the

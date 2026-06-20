@@ -6,6 +6,7 @@ import { getPrivateKey, SIGNING_ALG } from '../keys.js';
 import { consumeCode } from './store.js';
 import { pollDeviceToken } from './deviceStore.js';
 import { verifyPkceS256 } from './pkce.js';
+import { getDynamicClient } from './register.js';
 
 // ── User token cache ───────────────────────────────────────────────────
 // Keyed by client_id. Survives context_id changes within the same GE session.
@@ -105,7 +106,7 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
 
   // 1. Authenticate the client.
   const creds = clientCredentials(req);
-  const client = creds ? config.clients[creds.id] : undefined;
+  const client = creds ? (config.clients[creds.id] ?? getDynamicClient(creds.id)) : undefined;
   if (!creds || !client || !safeEqual(creds.secret, client.clientSecret)) {
     return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
   }

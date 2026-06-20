@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { config } from '../config.js';
 import { renderLoginPage } from './login.js';
+import { getDynamicClient } from './register.js';
 
 /** Fields of an OAuth authorization-code request that we carry through the login form. */
 export interface AuthorizeParams {
@@ -21,7 +22,7 @@ export function validateAuthorizeRequest(
 ): { ok: true; params: AuthorizeParams } | { ok: false; error: string; safeToRedirect: boolean } {
   const clientId = str(q.client_id);
   const redirectUri = str(q.redirect_uri);
-  const client = clientId ? config.clients[clientId] : undefined;
+  const client = clientId ? (config.clients[clientId] ?? getDynamicClient(clientId)) : undefined;
 
   if (!clientId || !client) return { ok: false, error: 'Unknown client_id', safeToRedirect: false };
   if (!redirectUri || !client.redirectUris.includes(redirectUri)) {
