@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
 
-interface DynamicClient { clientSecret: string; redirectUris: string[] }
+// Dynamic clients are public clients (no secret). PKCE provides the token-exchange security.
+interface DynamicClient { redirectUris: string[] }
 const dynamicClients = new Map<string, DynamicClient>();
 
 export function getDynamicClient(id: string): DynamicClient | undefined {
@@ -18,16 +19,14 @@ export function handleRegister(req: Request, res: Response): void {
     });
     return;
   }
-  const clientId     = crypto.randomUUID();
-  const clientSecret = crypto.randomBytes(32).toString('hex');
-  dynamicClients.set(clientId, { clientSecret, redirectUris: uris as string[] });
+  const clientId = crypto.randomUUID();
+  dynamicClients.set(clientId, { redirectUris: uris as string[] });
   res.status(201).json({
     client_id: clientId,
-    client_secret: clientSecret,
     redirect_uris: uris,
     grant_types: ['authorization_code'],
     response_types: ['code'],
-    token_endpoint_auth_method: 'client_secret_post',
+    token_endpoint_auth_method: 'none',
     client_id_issued_at: Math.floor(Date.now() / 1000),
   });
 }

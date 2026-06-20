@@ -106,10 +106,19 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
 
   // 1. Authenticate the client.
   const creds = clientCredentials(req);
-  const client = creds ? (config.clients[creds.id] ?? getDynamicClient(creds.id)) : undefined;
-  if (!creds || !client || !safeEqual(creds.secret, client.clientSecret)) {
+  if (!creds) return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
+
+  const staticClient = config.clients[creds.id];
+  if (staticClient) {
+    // Confidential static client — must present the registered secret.
+    if (!safeEqual(creds.secret, staticClient.clientSecret)) {
+      return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
+    }
+  } else if (!getDynamicClient(creds.id)) {
+    // Unknown client.
     return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
   }
+  // Dynamic public clients: skip secret check — PKCE provides the token-exchange security.
 
   // 2. Redeem the authorization code (single use).
   const code = String(body.code ?? '');
