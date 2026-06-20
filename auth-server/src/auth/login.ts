@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { verifyCredentials } from '../users.js';
 import { putCode } from './store.js';
 import type { AuthorizeParams } from './authorize.js';
+import { getDynamicClient } from './register.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // views/ is copied next to the compiled auth/ dir at build time (see package.json build script).
@@ -56,7 +57,7 @@ function paramsFromBody(body: Record<string, unknown>): AuthorizeParams | null {
   const clientId = String(body.client_id ?? '');
   const redirectUri = String(body.redirect_uri ?? '');
   const codeChallenge = String(body.code_challenge ?? '');
-  const client = config.clients[clientId];
+  const client = config.clients[clientId] ?? getDynamicClient(clientId);
   if (!client || !client.redirectUris.includes(redirectUri) || !codeChallenge) return null;
   return {
     clientId,
