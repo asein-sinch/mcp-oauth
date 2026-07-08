@@ -3,7 +3,11 @@ import cookieSession from 'cookie-session';
 import { config } from './config.js';
 import { loadKeys } from './keys.js';
 import { handleAuthorize } from './auth/authorize.js';
-import { handleLogin } from './auth/login.js';
+import {
+  handleLogin,
+  handleSelectAccount,
+  handleSelectProject,
+} from './auth/login.js';
 import { handleToken, handleTokenCached } from './auth/token.js';
 import { handleJwks, handleAsMetadata } from './auth/metadata.js';
 import { handleDeviceAuthorization, handleDeviceGetPage, handleDevicePost } from './auth/device.js';
@@ -38,6 +42,9 @@ async function main(): Promise<void> {
   app.get('/authorize', handleAuthorize);
   app.get('/login', handleAuthorize); // same query contract; re-renders the form
   app.post('/login', handleLogin);
+  // Dashboard-mode wizard steps (LOGIN_MODE=dashboard); inert in local mode.
+  app.post('/select-account', handleSelectAccount);
+  app.post('/select-project', handleSelectProject);
   app.post('/token', handleToken);
 
   // Dynamic Client Registration (RFC 7591) — used by MCP clients like MCPJam.

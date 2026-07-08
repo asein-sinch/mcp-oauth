@@ -1,12 +1,16 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
-import { SignJWT } from 'jose';
+import { SignJWT, jwtVerify } from 'jose';
 import { config } from '../config.js';
-import { getPrivateKey, SIGNING_ALG } from '../keys.js';
+import { getPrivateKey, getVerificationKey, SIGNING_ALG } from '../keys.js';
 import { consumeCode } from './store.js';
 import { pollDeviceToken } from './deviceStore.js';
 import { verifyPkceS256 } from './pkce.js';
 import { getDynamicClient } from './register.js';
+import { getCred, updateCred } from '../credStore.js';
+import { ensureFreshAccessKey, clientCredentialsToken } from '../dashboard.js';
+
+const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange';
 
 // ── User token cache ───────────────────────────────────────────────────
 // Keyed by client_id. Survives context_id changes within the same GE session.
@@ -99,9 +103,23 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // ── Token Exchange (RFC 8693) — MCP server back-channel ───────────────────
+  // The MCP server presents the validated client access token (subject_token) and authenticates
+  // as a confidential client; we resolve its cred_ref to the user's stored dashboard JWT, mint a
+  // Sinch access key for the chosen project, and return a short-lived Sinch M2M token. Sensitive
+  // material never leaves this server.
+  if (grantType === TOKEN_EXCHANGE_GRANT) {
+    return handleTokenExchange(req, res);
+  }
+
   // ── Authorization Code Grant ──────────────────────────────────────────────
   if (grantType !== 'authorization_code') {
-    return tokenError(res, 400, 'unsupported_grant_type', 'Only authorization_code and device_code are supported');
+    return tokenError(
+      res,
+      400,
+      'unsupported_grant_type',
+      'Only authorization_code, device_code and token-exchange are supported',
+    );
   }
 
   // 1. Authenticate the client.
@@ -138,9 +156,15 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
     return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
   }
 
-  // 4. Mint the signed JWT access token carrying the subproject_id claim.
+  // 4. Mint the signed JWT access token.
+  //    dashboard mode: identity-only claims + an opaque cred_ref (NO secrets in the token).
+  //    local mode    : the user's fixed subproject_id.
+  const claims: Record<string, unknown> = record.credRef
+    ? { account_id: record.accountId, project_id: record.projectId, cred_ref: record.credRef, scope: record.scope }
+    : { subproject_id: record.subprojectId, scope: record.scope };
+
   const now = Math.floor(Date.now() / 1000);
-  const accessToken = await new SignJWT({ subproject_id: record.subprojectId, scope: record.scope })
+  const accessToken = await new SignJWT(claims)
     .setProtectedHeader({ alg: SIGNING_ALG, kid: config.keyId, typ: 'JWT' })
     .setIssuer(config.issuerUrl)
     .setSubject(record.email)
@@ -155,4 +179,83 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
     expires_in: config.accessTokenTtl,
     scope: record.scope,
   });
+}
+
+/**
+ * RFC 8693 token exchange. Converts the user's MCP access token (which carries only a cred_ref)
+ * into a short-lived Sinch M2M token for the selected project. This is the exact API shape we
+ * want the dashboard team to implement natively (personal JWT + projectId -> M2M token); here we
+ * fake the internals with on-demand access-key creation + client_credentials.
+ */
+async function handleTokenExchange(req: Request, res: Response): Promise<void> {
+  const body = req.body as Record<string, unknown>;
+
+  // 1. Authenticate the caller as a confidential client (dynamic/public clients not allowed here).
+  const creds = clientCredentials(req);
+  const client = creds ? config.clients[creds.id] : undefined;
+  if (!creds || !client || !safeEqual(creds.secret, client.clientSecret)) {
+    return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
+  }
+
+  // 2. Verify the subject_token is an access token WE issued (signature, iss, aud).
+  const subjectToken = String(body.subject_token ?? '');
+  if (!subjectToken) {
+    return tokenError(res, 400, 'invalid_request', 'subject_token is required');
+  }
+  let credRef: string | undefined;
+  try {
+    const { payload } = await jwtVerify(subjectToken, getVerificationKey(), {
+      issuer: config.issuerUrl,
+      audience: config.audience,
+      algorithms: [SIGNING_ALG],
+      clockTolerance: 5,
+    });
+    credRef = typeof payload.cred_ref === 'string' ? payload.cred_ref : undefined;
+  } catch {
+    return tokenError(res, 400, 'invalid_grant', 'subject_token is invalid or expired');
+  }
+  if (!credRef) {
+    return tokenError(res, 400, 'invalid_grant', 'subject_token has no cred_ref (not a dashboard-mode token)');
+  }
+
+  // 3. Resolve the cred_ref to the stored dashboard JWT + project, then mint a Sinch M2M token.
+  const cred = getCred(credRef);
+  if (!cred) {
+    return tokenError(res, 400, 'invalid_grant', 'credential reference expired — re-authenticate');
+  }
+
+  try {
+    const now = Date.now();
+    if (cred.cachedToken && now < cred.cachedToken.expiresAt) {
+      res.json(exchangeResponse(cred.cachedToken.token, cred.cachedToken.expiresAt, cred.projectId));
+      return;
+    }
+    // Reuse a previously minted access key if we have one cached; otherwise create a fresh one.
+    if (!cred.accountId) {
+      return tokenError(res, 400, 'invalid_grant', 'credential reference is missing the account context');
+    }
+    const key =
+      cred.cachedKey ??
+      (await ensureFreshAccessKey(
+        { token: cred.dashboardJwt, cookie: cred.dashboardCookie },
+        cred.accountId,
+        cred.projectId,
+      ));
+    const { accessToken, expiresIn } = await clientCredentialsToken(key);
+    const expiresAt = now + Math.max(0, expiresIn - 30) * 1000;
+    updateCred(credRef, { cachedKey: key, cachedToken: { token: accessToken, expiresAt } });
+    res.json(exchangeResponse(accessToken, expiresAt, cred.projectId));
+  } catch {
+    return tokenError(res, 502, 'exchange_failed', 'Could not mint Sinch credentials for the project');
+  }
+}
+
+function exchangeResponse(token: string, expiresAt: number, projectId: string) {
+  return {
+    access_token: token,
+    issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    token_type: 'Bearer',
+    expires_in: Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)),
+    project_id: projectId,
+  };
 }

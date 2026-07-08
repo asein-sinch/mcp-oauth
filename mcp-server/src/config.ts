@@ -21,7 +21,19 @@ const envSchema = z
     JWKS_URL: z.string().url().optional(),
     EXPECTED_ISSUER: z.string().url().optional(),
     EXPECTED_AUDIENCE: z.string().url().optional(),
-    // The "vault": subproject_id -> Sinch access key/secret.
+
+    // How Sinch credentials are resolved once a JWT is verified (jwt mode only):
+    //  - vault    : look subproject_id up in the SINCH_CREDENTIALS env map (default).
+    //  - exchange : RFC 8693 token exchange against the auth server — it mints a short-lived
+    //               Sinch M2M token from the user's selected project. No secrets held here.
+    CREDENTIAL_SOURCE: z.enum(['vault', 'exchange']).default('vault'),
+    // exchange mode: the auth server's token endpoint (defaults to EXPECTED_ISSUER + /token) and
+    // this MCP server's own confidential-client credentials for the back-channel call.
+    TOKEN_EXCHANGE_URL: z.string().url().optional(),
+    BACKCHANNEL_CLIENT_ID: z.string().optional(),
+    BACKCHANNEL_CLIENT_SECRET: z.string().optional(),
+
+    // The "vault" (CREDENTIAL_SOURCE=vault): subproject_id -> Sinch access key/secret.
     // JSON: { "<subproject_id>": { "accessKey": "...", "accessSecret": "..." } }
     SINCH_CREDENTIALS: z.string().optional(),
 
@@ -68,7 +80,20 @@ const envSchema = z
       require('JWKS_URL', v.JWKS_URL);
       require('EXPECTED_ISSUER', v.EXPECTED_ISSUER);
       require('EXPECTED_AUDIENCE', v.EXPECTED_AUDIENCE);
-      require('SINCH_CREDENTIALS', v.SINCH_CREDENTIALS);
+      if (v.CREDENTIAL_SOURCE === 'exchange') {
+        require('BACKCHANNEL_CLIENT_ID', v.BACKCHANNEL_CLIENT_ID);
+        require('BACKCHANNEL_CLIENT_SECRET', v.BACKCHANNEL_CLIENT_SECRET);
+        // token endpoint must be derivable: explicit URL or EXPECTED_ISSUER + /token
+        if (!v.TOKEN_EXCHANGE_URL && !v.EXPECTED_ISSUER) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'TOKEN_EXCHANGE_URL or EXPECTED_ISSUER is required when CREDENTIAL_SOURCE=exchange',
+            path: ['TOKEN_EXCHANGE_URL'],
+          });
+        }
+      } else {
+        require('SINCH_CREDENTIALS', v.SINCH_CREDENTIALS);
+      }
     } else if (v.AUTH_MODE === 'none') {
       require('SINCH_PROJECT_ID', v.SINCH_PROJECT_ID);
       require('SINCH_ACCESS_KEY', v.SINCH_ACCESS_KEY);
@@ -97,6 +122,12 @@ export const config = {
   jwksUrl: raw.JWKS_URL,
   expectedIssuer: raw.EXPECTED_ISSUER,
   expectedAudience: raw.EXPECTED_AUDIENCE,
+  credentialSource: raw.CREDENTIAL_SOURCE,
+  // exchange mode: default the token endpoint to the issuer's /token if not set explicitly.
+  tokenExchangeUrl:
+    raw.TOKEN_EXCHANGE_URL ?? (raw.EXPECTED_ISSUER ? `${raw.EXPECTED_ISSUER.replace(/\/$/, '')}/token` : undefined),
+  backchannelClientId: raw.BACKCHANNEL_CLIENT_ID,
+  backchannelClientSecret: raw.BACKCHANNEL_CLIENT_SECRET,
   credentials,
   // none-mode hardcoded credential set
   staticProjectId: raw.SINCH_PROJECT_ID,
@@ -118,4 +149,7 @@ export const config = {
   eventsApiKey: raw.EVENTS_API_KEY,
 };
 
-export type SinchCredentials = z.infer<typeof credSchema>;
+// accessKey/accessSecret drive the client_credentials exchange (vault/static-token/none modes).
+// bearerToken short-circuits that exchange (CREDENTIAL_SOURCE=exchange: the auth server already
+// minted a Sinch M2M token, so we use it directly).
+export type SinchCredentials = z.infer<typeof credSchema> & { bearerToken?: string };

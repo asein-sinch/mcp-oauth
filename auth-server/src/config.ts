@@ -17,23 +17,44 @@ const userSchema = z.object({
   subprojectId: z.string().min(1),
 });
 
-const envSchema = z.object({
-  PORT: z.coerce.number().default(8080),
-  // Public HTTPS URL of THIS auth server. Used as the JWT `iss`.
-  ISSUER_URL: z.string().url(),
-  // The MCP server URL. Used as the JWT `aud` so the MCP server can verify it is the audience.
-  AUDIENCE: z.string().url(),
-  ACCESS_TOKEN_TTL: z.coerce.number().default(3600),
-  // RSA private key (PKCS8 PEM). Newlines may be escaped as \n in the env var.
-  PRIVATE_KEY_PEM: z.string().min(1),
-  // Stable key id published in the JWKS and stamped into each JWT header.
-  KEY_ID: z.string().default('demo-key-1'),
-  SESSION_SECRET: z.string().min(8),
-  // JSON: { "<client_id>": { "clientSecret": "...", "redirectUris": ["https://..."] } }
-  OAUTH_CLIENTS: z.string().transform((s, ctx) => parseJson(s, ctx, 'OAUTH_CLIENTS')),
-  // JSON: { "<email>": { "passwordHash": "...", "subprojectId": "..." } }
-  USERS: z.string().transform((s, ctx) => parseJson(s, ctx, 'USERS')),
-});
+const envSchema = z
+  .object({
+    PORT: z.coerce.number().default(8080),
+    // Public HTTPS URL of THIS auth server. Used as the JWT `iss`.
+    ISSUER_URL: z.string().url(),
+    // The MCP server URL. Used as the JWT `aud` so the MCP server can verify it is the audience.
+    AUDIENCE: z.string().url(),
+    ACCESS_TOKEN_TTL: z.coerce.number().default(3600),
+    // RSA private key (PKCS8 PEM). Newlines may be escaped as \n in the env var.
+    PRIVATE_KEY_PEM: z.string().min(1),
+    // Stable key id published in the JWKS and stamped into each JWT header.
+    KEY_ID: z.string().default('demo-key-1'),
+    SESSION_SECRET: z.string().min(8),
+    // JSON: { "<client_id>": { "clientSecret": "...", "redirectUris": ["https://..."] } }
+    OAUTH_CLIENTS: z.string().transform((s, ctx) => parseJson(s, ctx, 'OAUTH_CLIENTS')),
+    // JSON: { "<email>": { "passwordHash": "...", "subprojectId": "..." } }
+    // Only used by LOGIN_MODE=local. Defaults to empty so dashboard-only deploys need not set it.
+    USERS: z
+      .string()
+      .default('{}')
+      .transform((s, ctx) => parseJson(s, ctx, 'USERS')),
+
+    // --- Login mode -----------------------------------------------------------
+    //  - local     : authenticate against the bcrypt USERS map; user -> fixed subproject_id.
+    //  - dashboard : the user pastes their Sinch dashboard (CCP) bearer token; we then list their
+    //                accounts + projects via GraphQL and mint M2M creds on demand (token exchange).
+    LOGIN_MODE: z.enum(['local', 'dashboard']).default('local'),
+    // When set ("1"/"true"), dashboard.ts returns fixtures instead of calling the real GraphQL API.
+    DASHBOARD_MOCK: z.string().optional(),
+
+    // Sinch Customer Dashboard GraphQL API (accounts, projects, access keys), authorized by the
+    // pasted CCP bearer token (iss: "CCP").
+    DASHBOARD_GRAPHQL_URL: z.string().url().default('https://dashboard.api.sinch.com/graphql'),
+    // client_credentials endpoint to turn a minted access key into a Sinch M2M token.
+    SINCH_AUTH_URL: z.string().url().default('https://auth.sinch.com/oauth2/token'),
+    // Display name for the throwaway access key we create per project (reuse-or-recreate).
+    ACCESS_KEY_DISPLAY_NAME: z.string().default('gemini-mcp-demo'),
+  });
 
 function parseJson(s: string, ctx: z.RefinementCtx, name: string): unknown {
   try {
@@ -59,6 +80,11 @@ export const config = {
   sessionSecret: raw.SESSION_SECRET,
   clients,
   users,
+  loginMode: raw.LOGIN_MODE,
+  dashboardMock: raw.DASHBOARD_MOCK === '1' || raw.DASHBOARD_MOCK === 'true',
+  dashboardGraphqlUrl: raw.DASHBOARD_GRAPHQL_URL,
+  sinchAuthUrl: raw.SINCH_AUTH_URL,
+  accessKeyDisplayName: raw.ACCESS_KEY_DISPLAY_NAME,
 };
 
 export type OAuthClient = z.infer<typeof clientSchema>;
