@@ -100,6 +100,22 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       algorithms: ['RS256'],
       clockTolerance: 5,
     });
+    req.userEmail = typeof payload.sub === 'string' ? payload.sub : undefined;
+
+    if (config.credentialSource === 'exchange') {
+      // Dashboard mode: exchange the validated client token for a short-lived Sinch M2M token.
+      // The token carries no secrets — only an opaque cred_ref the auth server resolves.
+      const exchanged = await exchangeForSinchToken(token);
+      if (!exchanged) return unauthorized(res, 'token exchange failed');
+      const projectId =
+        exchanged.projectId ?? (typeof payload.project_id === 'string' ? payload.project_id : undefined);
+      if (!projectId) return unauthorized(res, 'token exchange returned no project');
+      req.subprojectId = projectId;
+      req.sinchCreds = { accessKey: '', accessSecret: '', bearerToken: exchanged.accessToken };
+      return next();
+    }
+
+    // vault mode: subproject_id claim -> Sinch access key/secret from the env vault.
     const subproject = payload.subproject_id;
     if (typeof subproject !== 'string' || !subproject) {
       return unauthorized(res, 'token missing subproject_id claim');
@@ -109,10 +125,35 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       return unauthorized(res, `no credentials provisioned for subproject "${subproject}"`);
     }
     req.subprojectId = subproject;
-    req.userEmail = typeof payload.sub === 'string' ? payload.sub : undefined;
     req.sinchCreds = creds;
     return next();
   } catch (err) {
     return unauthorized(res, err instanceof Error ? err.message : 'invalid token');
   }
+}
+
+/**
+ * Back-channel RFC 8693 token exchange against the auth server. Presents the user's validated
+ * client token as `subject_token` and this server's confidential-client credentials, and receives
+ * a short-lived Sinch M2M access token for the user's selected project.
+ */
+async function exchangeForSinchToken(
+  subjectToken: string,
+): Promise<{ accessToken: string; projectId?: string } | null> {
+  const basic = Buffer.from(`${config.backchannelClientId}:${config.backchannelClientSecret}`).toString('base64');
+  const res = await fetch(config.tokenExchangeUrl!, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token: subjectToken,
+      subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    }),
+  });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => null)) as
+    | { access_token?: string; project_id?: string }
+    | null;
+  if (!json?.access_token) return null;
+  return { accessToken: json.access_token, projectId: json.project_id };
 }

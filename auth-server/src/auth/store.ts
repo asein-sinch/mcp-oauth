@@ -5,11 +5,16 @@
 
 export interface AuthCodeRecord {
   email: string;
-  subprojectId: string;
+  // local mode: the user's fixed subproject. dashboard mode: omitted (see projectId/credRef).
+  subprojectId?: string;
   clientId: string;
   redirectUri: string;
   scope: string;
   codeChallenge: string; // PKCE S256 challenge
+  // dashboard mode only: the selected account/project and the server-side credential reference.
+  accountId?: string;
+  projectId?: string;
+  credRef?: string;
   expiresAt: number; // epoch ms
 }
 

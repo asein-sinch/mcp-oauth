@@ -1,4 +1,4 @@
-import { importPKCS8, exportJWK, type JWK, type KeyLike } from 'jose';
+import { importPKCS8, importJWK, exportJWK, type JWK, type KeyLike } from 'jose';
 import { config } from './config.js';
 
 /**
@@ -9,6 +9,7 @@ import { config } from './config.js';
 const ALG = 'RS256';
 
 let privateKey: KeyLike;
+let publicKey: KeyLike; // for verifying tokens WE issued (token-exchange subject_token)
 let publicJwk: JWK;
 
 export async function loadKeys(): Promise<void> {
@@ -23,11 +24,18 @@ export async function loadKeys(): Promise<void> {
     use: 'sig',
     kid: config.keyId,
   };
+  publicKey = (await importJWK(publicJwk, ALG)) as KeyLike;
 }
 
 export function getPrivateKey(): KeyLike {
   if (!privateKey) throw new Error('keys not loaded — call loadKeys() at startup');
   return privateKey;
+}
+
+/** Public key for verifying access tokens this server issued (used by the token-exchange grant). */
+export function getVerificationKey(): KeyLike {
+  if (!publicKey) throw new Error('keys not loaded — call loadKeys() at startup');
+  return publicKey;
 }
 
 export function getJwks(): { keys: JWK[] } {

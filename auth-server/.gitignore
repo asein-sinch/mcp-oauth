@@ -1,0 +1,6 @@
+
+# live dashboard smoke-test token (never commit)
+.dashboard-token
+scripts/.dashboard-token
+.dashboard-cookie
+scripts/.dashboard-cookie

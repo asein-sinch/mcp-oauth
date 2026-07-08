@@ -14,6 +14,10 @@ interface CachedToken {
 const tokenCache = new Map<string, CachedToken>();
 
 async function getAccessToken(subprojectId: string, creds: SinchCredentials): Promise<string> {
+  // CREDENTIAL_SOURCE=exchange: the auth server already minted a Sinch M2M token (RFC 8693),
+  // resolved per request in the auth middleware — use it directly, no client_credentials here.
+  if (creds.bearerToken) return creds.bearerToken;
+
   const cached = tokenCache.get(subprojectId);
   if (cached && Date.now() < cached.expiresAt - 30_000) return cached.token;
 
