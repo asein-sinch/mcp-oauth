@@ -139,6 +139,28 @@
             transform: translateY(-1px);
         }
 
+        .scrub-btn {
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            padding: 0.6rem 1.2rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            margin-right: 0.75rem;
+        }
+
+        .scrub-btn:hover {
+            background: rgba(239, 68, 68, 0.25);
+            border-color: rgba(239, 68, 68, 0.5);
+            color: #ffffff;
+            transform: translateY(-1px);
+        }
+
+
         /* Dashboard KPI Cards Grid */
         .stats-grid {
             display: grid;
@@ -414,7 +436,10 @@
                     <span>Monitoring live Google Cloud Marketplace transaction stream...</span>
                 </p>
             </div>
-            <a href="/logout" class="logout-btn">Terminate Session</a>
+            <div class="header-right" style="display: flex; align-items: center;">
+                <button onclick="scrubDatabase()" class="scrub-btn">🧹 Scrub Cloud DB</button>
+                <a href="/logout" class="logout-btn">Terminate Session</a>
+            </div>
         </header>
 
         <!-- Stats Overview Cards -->
@@ -530,6 +555,31 @@
                 content.style.display = 'block';
                 svg.style.transform = 'rotate(90deg)';
                 btn.classList.add('active');
+            }
+        }
+
+        function scrubDatabase() {
+            if (confirm("⚠️ WARNING: Are you sure you want to permanently delete ALL event logs inside your running container's database? This cannot be undone!")) {
+                fetch('/api/events/scrub', {
+                    method: 'POST'
+                })
+                .then(response => {
+                    if (response.ok) {
+                        return response.json();
+                    }
+                    throw new Error('Unauthorized or server error');
+                })
+                .then(data => {
+                    if (data.success) {
+                        alert("🧹 Database successfully scrubbed! Starting fresh.");
+                        window.location.reload();
+                    } else {
+                        alert("❌ Error: " + data.error);
+                    }
+                })
+                .catch(err => {
+                    alert("❌ Scrub failed: " + err.message);
+                });
             }
         }
 

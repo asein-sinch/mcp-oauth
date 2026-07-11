@@ -276,3 +276,20 @@ def get_events_count(request: Request):
     except Exception as e:
         return {"error": str(e)}, 500
 
+@app.post("/api/events/scrub")
+def post_events_scrub(request: Request):
+    """Securely deletes all logged events from the database table."""
+    if not is_authenticated(request):
+        return {"error": "Unauthorized"}, 401
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM events")
+        conn.commit()
+        conn.close()
+        print("🧹 DATABASE SCRUBBED: All event logs have been securely wiped.")
+        return {"success": True}
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
