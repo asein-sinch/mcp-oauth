@@ -100,3 +100,26 @@ jobs:
           push: true
           build-args: AUTH_MODE=none
           tags: ${{ env.REGISTRY }}/${{ env.ORG }}/mcp-oauth-mcp-none:latest
+
+  marketplace-dashboard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push marketplace-dashboard
+        uses: docker/build-push-action@v5
+        with:
+          context: ./marketplace-dashboard
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.ORG }}/mcp-oauth-marketplace-dashboard:latest
+
