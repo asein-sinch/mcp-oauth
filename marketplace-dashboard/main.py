@@ -18,6 +18,18 @@ app = FastAPI(title="Sinch Marketplace Event Dashboard")
 # Setup template directories
 templates = Jinja2Templates(directory="templates")
 
+# Configure Google Application Credentials via environment variable JSON if running in external cloud
+gcp_creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+if gcp_creds_json:
+    try:
+        creds_path = "/tmp/sa-key.json"
+        with open(creds_path, "w") as f:
+            f.write(gcp_creds_json)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+        print("🔑 Google Application Credentials configured from GOOGLE_CREDENTIALS_JSON env var.")
+    except Exception as e:
+        print(f"⚠️ Failed to write GOOGLE_CREDENTIALS_JSON: {e}")
+
 # Configure environment variables (with secure defaults for PoC)
 DB_PATH = os.getenv("DB_PATH", "marketplace.db")
 PROJECT_ID = os.getenv("PROJECT_ID", "sinch-build")
