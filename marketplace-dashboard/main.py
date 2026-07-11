@@ -30,8 +30,15 @@ if gcp_creds_json:
     except Exception as e:
         print(f"⚠️ Failed to write GOOGLE_CREDENTIALS_JSON: {e}")
 
-# Configure environment variables (with secure defaults for PoC)
-DB_PATH = os.getenv("DB_PATH", "marketplace.db")
+# Configure DB Path (Default to /data/marketplace.db if /data volume is writable, otherwise fallback to local)
+default_db = "marketplace.db"
+try:
+    if os.path.exists("/data") and os.access("/data", os.W_OK):
+        default_db = "/data/marketplace.db"
+except Exception:
+    pass
+
+DB_PATH = os.getenv("DB_PATH", default_db)
 PROJECT_ID = os.getenv("PROJECT_ID", "sinch-build")
 SUBSCRIPTION_ID = os.getenv("SUBSCRIPTION_ID", "marketplace-events")
 
