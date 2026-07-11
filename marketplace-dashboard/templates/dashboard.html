@@ -533,10 +533,31 @@
             }
         }
 
-        // Auto-refresh the page every 10 seconds to show new events
-        setTimeout(function() {
-            window.location.reload();
-        }, 10000);
+        // Smart background polling: only reload the page when a brand new event is detected
+        const initialCount = {{ total_count }};
+        
+        function checkNewEvents() {
+            fetch('/api/events/count')
+                .then(response => {
+                    if (response.ok) {
+                        return response.json();
+                    }
+                    throw new Error('Unauthorized or server error');
+                })
+                .then(data => {
+                    if (data.count > initialCount) {
+                        // Brand new event arrived! Reload to animate it in.
+                        window.location.reload();
+                    }
+                })
+                .catch(err => {
+                    // Suppress log noise if session expires or container restarts
+                    console.debug('Polling skipped:', err.message);
+                });
+        }
+
+        // Poll every 10 seconds silently in the background (zero animations or disruptions)
+        setInterval(checkNewEvents, 10000);
     </script>
 </body>
 </html>

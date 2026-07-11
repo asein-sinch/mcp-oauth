@@ -253,3 +253,19 @@ def get_dashboard(request: Request):
         "active_count": active_count,
         "cancelled_count": cancelled_count
     })
+
+@app.get("/api/events/count")
+def get_events_count(request: Request):
+    """Lightweight endpoint for background polling of total logged events."""
+    if not is_authenticated(request):
+        return {"error": "Unauthorized"}, 401
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return {"count": count}
+    except Exception as e:
+        return {"error": str(e)}, 500
+
