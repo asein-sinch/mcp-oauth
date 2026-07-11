@@ -35,3 +35,4 @@ mcp-server/run-with-env.mjs
 .pytest_cache/
 *.db
 *.sqlite
+sa-key.json

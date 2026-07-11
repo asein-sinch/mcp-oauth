@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sinch Marketplace - Live Event Stream</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-gradient: radial-gradient(circle at 50% 0%, #17153a 0%, #09090b 80%);
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --accent: #ec4899;
+            --glass-bg: rgba(15, 23, 42, 0.45);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            
+            /* Status Colors */
+            --color-creation: #f59e0b; /* Orange */
+            --color-active: #10b981;   /* Emerald */
+            --color-cancelled: #ef4444;/* Rose */
+            --color-other: #8b5cf6;    /* Violet */
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background: var(--bg-gradient);
+            color: var(--text-main);
+            min-height: 100vh;
+            padding: 2rem;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        /* Ambient glow spots */
+        .ambient-glow {
+            position: absolute;
+            width: 800px;
+            height: 800px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0) 75%);
+            border-radius: 50%;
+            top: -200px;
+            right: -100px;
+            filter: blur(100px);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .ambient-glow-2 {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(236, 72, 153, 0.06) 0%, rgba(236, 72, 153, 0) 75%);
+            border-radius: 50%;
+            bottom: -100px;
+            left: -100px;
+            filter: blur(100px);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 10;
+        }
+
+        /* Top Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2.5rem;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 1.5rem;
+        }
+
+        .header-left h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-left p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            margin-top: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .live-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: var(--color-active);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--color-active);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .logout-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--glass-border);
+            color: var(--text-main);
+            padding: 0.6rem 1.2rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+
+        .logout-btn:hover {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+            transform: translateY(-1px);
+        }
+
+        /* Dashboard KPI Cards Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .stat-icon.total { background: rgba(99, 102, 241, 0.15); color: var(--primary); }
+        .stat-icon.creation { background: rgba(245, 158, 11, 0.15); color: var(--color-creation); }
+        .stat-icon.active { background: rgba(16, 185, 129, 0.15); color: var(--color-active); }
+        .stat-icon.cancelled { background: rgba(239, 68, 68, 0.15); color: var(--color-cancelled); }
+
+        .stat-details h3 {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .stat-details p {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-top: 0.25rem;
+        }
+
+        /* Timeline Section */
+        .content-layout {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+        }
+
+        .section-title {
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .section-title span {
+            font-size: 0.8rem;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            border: 1px solid var(--glass-border);
+            color: var(--text-muted);
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 7px;
+            width: 2px;
+            background: linear-gradient(to bottom, var(--primary) 0%, rgba(255, 255, 255, 0.05) 100%);
+        }
+
+        .event-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .event-card:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+            transform: translateX(4px);
+        }
+
+        /* Timeline indicator dot */
+        .event-card::before {
+            content: '';
+            position: absolute;
+            left: -2rem;
+            top: 1.85rem;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 4px solid #09090b;
+            z-index: 10;
+        }
+
+        /* Event state color maps */
+        .event-card.event-creation::before { background-color: var(--color-creation); box-shadow: 0 0 8px var(--color-creation); }
+        .event-card.event-active::before { background-color: var(--color-active); box-shadow: 0 0 8px var(--color-active); }
+        .event-card.event-cancelled::before { background-color: var(--color-cancelled); box-shadow: 0 0 8px var(--color-cancelled); }
+        .event-card.event-other::before { background-color: var(--color-other); box-shadow: 0 0 8px var(--color-other); }
+
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .event-title-block {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .event-type-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            letter-spacing: 0.05em;
+        }
+
+        .event-creation .event-type-badge { background: rgba(245, 158, 11, 0.15); color: var(--color-creation); }
+        .event-active .event-type-badge { background: rgba(16, 185, 129, 0.15); color: var(--color-active); }
+        .event-cancelled .event-type-badge { background: rgba(239, 68, 68, 0.15); color: var(--color-cancelled); }
+        .event-other .event-type-badge { background: rgba(139, 92, 246, 0.15); color: var(--color-other); }
+
+        .event-timestamp {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .event-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .info-field-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.25rem;
+        }
+
+        .info-field-value {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: #ffffff;
+        }
+
+        .info-field-value.mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        /* Interactive Raw Payload Collapsible */
+        .payload-toggle {
+            background: none;
+            border: none;
+            color: var(--primary);
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0;
+            transition: color 0.2s ease;
+        }
+
+        .payload-toggle:hover {
+            color: var(--accent);
+        }
+
+        .payload-togglesvg {
+            transition: transform 0.2s ease;
+        }
+
+        .payload-toggle.active svg {
+            transform: rotate(90deg);
+        }
+
+        .payload-content {
+            display: none;
+            margin-top: 0.75rem;
+            background: rgba(9, 9, 11, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: #a7f3d0;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Empty state */
+        .empty-timeline {
+            text-align: center;
+            background: var(--glass-bg);
+            border: 1px dashed var(--glass-border);
+            border-radius: 20px;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-timeline svg {
+            color: rgba(255, 255, 255, 0.05);
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-glow"></div>
+    <div class="ambient-glow-2"></div>
+
+    <div class="container">
+        <!-- Dashboard Top Header -->
+        <header>
+            <div class="header-left">
+                <h1>Sinch Marketplace Events</h1>
+                <p>
+                    <span class="live-indicator"></span>
+                    <span>Monitoring live Google Cloud Marketplace transaction stream...</span>
+                </p>
+            </div>
+            <a href="/logout" class="logout-btn">Terminate Session</a>
+        </header>
+
+        <!-- Stats Overview Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon total">#</div>
+                <div class="stat-details">
+                    <h3>Total Transactions</h3>
+                    <p>{{ total_count }}</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon creation">➕</div>
+                <div class="stat-details">
+                    <h3>Creation Requests</h3>
+                    <p>{{ creation_count }}</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon active">🎉</div>
+                <div class="stat-details">
+                    <h3>Active Subscriptions</h3>
+                    <p>{{ active_count }}</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon cancelled">⚠️</div>
+                <div class="stat-details">
+                    <h3>Cancellations</h3>
+                    <p>{{ cancelled_count }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Timeline Stream -->
+        <div class="content-layout">
+            <div>
+                <h2 class="section-title">
+                    <span>Audit Log Feed</span>
+                    <span>Last updated: Just now</span>
+                </h2>
+
+                {% if events %}
+                <div class="timeline">
+                    {% for event in events %}
+                    {% set card_class = 'event-other' %}
+                    {% if event.event_type == 'ENTITLEMENT_CREATION_REQUESTED' %}
+                        {% set card_class = 'event-creation' %}
+                    {% elif event.event_type == 'ENTITLEMENT_ACTIVE' %}
+                        {% set card_class = 'event-active' %}
+                    {% elif event.event_type == 'ENTITLEMENT_CANCELLED' %}
+                        {% set card_class = 'event-cancelled' %}
+                    {% endif %}
+
+                    <div class="event-card {{ card_class }}">
+                        <div class="event-header">
+                            <div class="event-title-block">
+                                <span class="event-type-badge">{{ event.event_type }}</span>
+                            </div>
+                            <span class="event-timestamp">{{ event.timestamp }}</span>
+                        </div>
+
+                        <div class="event-info-grid">
+                            <div>
+                                <div class="info-field-label">Entitlement ID</div>
+                                <div class="info-field-value mono">{{ event.entitlement_id }}</div>
+                            </div>
+                            <div>
+                                <div class="info-field-label">Customer Account ID</div>
+                                <div class="info-field-value mono">{{ event.account_id }}</div>
+                            </div>
+                            <div>
+                                <div class="info-field-label">Event Stream ID</div>
+                                <div class="info-field-value mono" style="background:none; padding:0; font-family:inherit;">{{ event.event_id }}</div>
+                            </div>
+                        </div>
+
+                        <button class="payload-toggle" onclick="togglePayload('{{ event.id }}', this)">
+                            <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" class="payload-togglesvg" style="transform: rotate(0deg);">
+                                <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+                            </svg>
+                            <span>Inspect Raw JSON Payload</span>
+                        </button>
+                        <div id="payload-{{ event.id }}" class="payload-content">{{ event.payload_json }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-timeline">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="12"/>
+                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    <h2>No Marketplace Events Logged Yet</h2>
+                    <p style="margin-top: 0.5rem; font-size: 0.95rem;">Send a simulated test event using <code>send_mock_event.py</code> to see it propagate in real-time!</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function togglePayload(id, btn) {
+            const content = document.getElementById('payload-' + id);
+            const svg = btn.querySelector('.payload-togglesvg');
+            
+            if (content.style.display === 'block') {
+                content.style.display = 'none';
+                svg.style.transform = 'rotate(0deg)';
+                btn.classList.remove('active');
+            } else {
+                content.style.display = 'block';
+                svg.style.transform = 'rotate(90deg)';
+                btn.classList.add('active');
+            }
+        }
+
+        // Auto-refresh the page every 10 seconds to show new events
+        setTimeout(function() {
+            window.location.reload();
+        }, 10000);
+    </script>
+</body>
+</html>
