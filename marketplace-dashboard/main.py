@@ -19,7 +19,7 @@ app = FastAPI(title="Sinch Marketplace Event Dashboard")
 templates = Jinja2Templates(directory="templates")
 
 # Configure environment variables (with secure defaults for PoC)
-DB_PATH = "marketplace.db"
+DB_PATH = os.getenv("DB_PATH", "marketplace.db")
 PROJECT_ID = os.getenv("PROJECT_ID", "sinch-build")
 SUBSCRIPTION_ID = os.getenv("SUBSCRIPTION_ID", "marketplace-events")
 
@@ -39,6 +39,11 @@ def get_db_connection():
 
 def init_db():
     """Initializes the SQLite database schema."""
+    # Ensure parent directory exists if nested
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
