@@ -14,12 +14,17 @@ DEFAULT_DB_PATH = "marketplace.db"
 def scrub_database(db_path):
     # Check if DB file exists
     if not os.path.exists(db_path):
-        # Look in marketplace-dashboard subdirectory in case run from workspace root
-        alt_path = os.path.join("marketplace-dashboard", db_path)
-        if os.path.exists(alt_path):
-            db_path = alt_path
+        # 1. Look in sibling directory (if running from marketplace-scripts)
+        sibling_path = os.path.join("..", "marketplace-dashboard", db_path)
+        # 2. Look in subdirectory (if running from workspace root)
+        sub_path = os.path.join("marketplace-dashboard", db_path)
+        
+        if os.path.exists(sibling_path):
+            db_path = sibling_path
+        elif os.path.exists(sub_path):
+            db_path = sub_path
         else:
-            print(f"❌ Error: Database file not found at '{db_path}'.")
+            print(f"❌ Error: Database file not found. (Checked: '{db_path}', '{sibling_path}', and '{sub_path}')")
             return
 
     try:
