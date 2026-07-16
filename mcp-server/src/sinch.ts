@@ -1,10 +1,11 @@
 import { config, type SinchCredentials } from './config.js';
+import { AsyncLocalStorage } from 'async_hooks';
 
 /**
- * Thin Sinch API client. Exchanges the subproject's access key/secret for an OAuth2
- * access token (client_credentials), then calls a Sinch API on behalf of that subproject.
+ * Thin Sinch API client. Exchanges the access key/secret for an OAuth2
+ * access token (client_credentials), then calls a Sinch API on behalf of the project.
  *
- * Tokens are cached in-memory per subproject until shortly before they expire.
+ * Tokens are cached in-memory.
  */
 
 interface CachedToken {
@@ -13,20 +14,76 @@ interface CachedToken {
 }
 const tokenCache = new Map<string, CachedToken>();
 
-async function getAccessToken(subprojectId: string, creds: SinchCredentials): Promise<string> {
-  // CREDENTIAL_SOURCE=exchange: the auth server already minted a Sinch M2M token (RFC 8693),
-  // resolved per request in the auth middleware — use it directly, no client_credentials here.
-  if (creds.bearerToken) return creds.bearerToken;
+// AsyncLocalStorage to carry active tool context from tools.ts down to all outbound HTTP requests
+export const toolContextStore = new AsyncLocalStorage<{ toolName: string }>();
 
+// Package version or standard fallback identifier
+const MCP_SERVER_VERSION = '0.1.0';
+
+/**
+ * Generates the standardized User-Agent header matching Sinch reference:
+ * `sinch-sdk/MCP-${mcpServerVersion} (JavaScript/${process.version}; {toolName}; {userId})`
+ */
+export function getUserAgent(fallbackToolName: string, subprojectId: string): string {
+  const toolName = toolContextStore.getStore()?.toolName || fallbackToolName || 'unknown';
+  return `sinch-sdk/MCP-${MCP_SERVER_VERSION} (JavaScript/${process.version}; ${toolName}; ${subprojectId})`;
+}
+
+/**
+ * Helper function to wrap fetch with comprehensive logging for both requests and responses.
+ * Since the user is running blind, this outputs highly-detailed trace information to stdout/stderr.
+ */
+async function fetchWithLogging(
+  url: string,
+  options: RequestInit,
+  contextName: string,
+  subprojectId: string,
+): Promise<Response> {
+  const method = options.method ?? 'GET';
+  const headers = options.headers as Record<string, string>;
+
+  console.log(`\n[MCP SINCH REQUEST] [${contextName}] ${method} ${url}`);
+  console.log(`[MCP SINCH REQUEST HEADERS]`, JSON.stringify(headers, null, 2));
+  if (options.body) {
+    console.log(`[MCP SINCH REQUEST BODY]`, typeof options.body === 'string' ? options.body : String(options.body));
+  }
+
+  try {
+    const res = await fetch(url, options);
+    console.log(`[MCP SINCH RESPONSE] [${contextName}] Status: ${res.status} ${res.statusText}`);
+    console.log(`[MCP SINCH RESPONSE HEADERS]`, JSON.stringify(Object.fromEntries(res.headers.entries()), null, 2));
+
+    // Safely read response text by cloning the response object to preserve streams
+    const clonedRes = res.clone();
+    const responseText = await clonedRes.text();
+    console.log(`[MCP SINCH RESPONSE BODY]`, responseText);
+
+    return res;
+  } catch (err) {
+    console.error(`[MCP SINCH REQUEST ERROR] [${contextName}]`, err);
+    throw err;
+  }
+}
+
+async function getAccessToken(subprojectId: string, creds: SinchCredentials): Promise<string> {
   const cached = tokenCache.get(subprojectId);
   if (cached && Date.now() < cached.expiresAt - 30_000) return cached.token;
 
   const basic = Buffer.from(`${creds.accessKey}:${creds.accessSecret}`).toString('base64');
-  const res = await fetch(config.sinchAuthUrl, {
-    method: 'POST',
-    headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'client_credentials' }),
-  });
+  const res = await fetchWithLogging(
+    config.sinchAuthUrl,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${basic}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': getUserAgent('getAccessToken', subprojectId),
+      },
+      body: new URLSearchParams({ grant_type: 'client_credentials' }),
+    },
+    'getAccessToken',
+    subprojectId,
+  );
   if (!res.ok) {
     throw new Error(`Sinch token request failed (${res.status}): ${await res.text()}`);
   }
@@ -36,7 +93,7 @@ async function getAccessToken(subprojectId: string, creds: SinchCredentials): Pr
   return json.access_token;
 }
 
-/** Example read-only call: list active phone numbers for the subproject (= Sinch project). */
+/** Lists active phone numbers for the project. */
 export async function listActiveNumbers(
   subprojectId: string,
   creds: SinchCredentials,
@@ -44,7 +101,17 @@ export async function listActiveNumbers(
 ): Promise<unknown> {
   const token = await getAccessToken(subprojectId, creds);
   const url = `${config.sinchNumbersBase}/v1/projects/${encodeURIComponent(subprojectId)}/activeNumbers?pageSize=${pageSize}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchWithLogging(
+    url,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': getUserAgent('listActiveNumbers', subprojectId),
+      },
+    },
+    'listActiveNumbers',
+    subprojectId,
+  );
   if (!res.ok) {
     throw new Error(`Sinch activeNumbers failed (${res.status}): ${await res.text()}`);
   }
@@ -52,8 +119,8 @@ export async function listActiveNumbers(
 }
 
 /**
- * Generic call against the Provisioning API for a subproject (= Sinch projectId).
- * `path` is appended after `/v1/projects/{projectId}`. Returns parsed JSON ({} if empty).
+ * Generic call against the Provisioning API.
+ * `path` is appended after `/v1/projects/{projectId}`.
  */
 async function provisioningRequest(
   subprojectId: string,
@@ -64,14 +131,20 @@ async function provisioningRequest(
 ): Promise<unknown> {
   const token = await getAccessToken(subprojectId, creds);
   const url = `${config.sinchProvisioningBase}/v1/projects/${encodeURIComponent(subprojectId)}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+  const res = await fetchWithLogging(
+    url,
+    {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        'User-Agent': getUserAgent('provisioningRequest', subprojectId),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+    `provisioning_${method}_${path}`,
+    subprojectId,
+  );
   if (!res.ok) {
     throw new Error(`Sinch provisioning ${method} ${path} failed (${res.status}): ${await res.text()}`);
   }
@@ -79,7 +152,7 @@ async function provisioningRequest(
   return text ? JSON.parse(text) : {};
 }
 
-/** Create an RCS sender. `body` is the full create payload (see rcsSenderTemplate). */
+/** Create an RCS sender. */
 export function createRcsSender(
   subprojectId: string,
   creds: SinchCredentials,
@@ -88,35 +161,26 @@ export function createRcsSender(
   return provisioningRequest(subprojectId, creds, 'POST', '/rcs/senders', body);
 }
 
-/** Set the target countries on an existing sender (PATCH details.countries). */
-export function setRcsSenderCountries(
+/** Get a specific RCS sender details. */
+export function getRcsSender(
   subprojectId: string,
   creds: SinchCredentials,
   senderId: string,
-  countries: string[],
 ): Promise<unknown> {
-  return provisioningRequest(subprojectId, creds, 'PATCH', `/rcs/senders/${encodeURIComponent(senderId)}`, {
-    details: { countries },
-  });
+  return provisioningRequest(subprojectId, creds, 'GET', `/rcs/senders/${encodeURIComponent(senderId)}`);
 }
 
-/** Add test numbers (E.164) to a sender; each tester receives an invite. */
-export function addRcsTestNumbers(
+/** Update fields on an existing RCS sender. */
+export function updateRcsSender(
   subprojectId: string,
   creds: SinchCredentials,
   senderId: string,
-  testNumbers: string[],
+  body: unknown,
 ): Promise<unknown> {
-  return provisioningRequest(
-    subprojectId,
-    creds,
-    'POST',
-    `/rcs/senders/${encodeURIComponent(senderId)}/testNumbers`,
-    { testNumbers },
-  );
+  return provisioningRequest(subprojectId, creds, 'PATCH', `/rcs/senders/${encodeURIComponent(senderId)}`, body);
 }
 
-/** List RCS senders for the subproject, with optional pagination. */
+/** List RCS senders for the project. */
 export async function listRcsSenders(
   subprojectId: string,
   creds: SinchCredentials,
@@ -128,7 +192,7 @@ export async function listRcsSenders(
   return provisioningRequest(subprojectId, creds, 'GET', `/rcs/senders?${params}`);
 }
 
-/** Begin the launch process for a sender (no request body). */
+/** Begin the launch process for an RCS sender. */
 export function launchRcsSender(
   subprojectId: string,
   creds: SinchCredentials,
@@ -137,23 +201,33 @@ export function launchRcsSender(
   return provisioningRequest(subprojectId, creds, 'POST', `/rcs/senders/${encodeURIComponent(senderId)}/launch`);
 }
 
-// --- Conversation API (send messages) ---
+// --- Conversation API (apps, channels and sending messages) ---
 
-interface ConversationApp {
+export interface ConversationApp {
   id: string;
   display_name?: string;
-  channel_credentials?: { channel: string }[];
+  channel_credentials?: { channel: string; [key: string]: any }[];
 }
 
-/** List Conversation API apps for the subproject (= Sinch projectId). */
-async function listConversationApps(
+/** List Conversation API apps. Region is fixed to server regional env. */
+export async function listConversationApps(
   subprojectId: string,
   creds: SinchCredentials,
   region: string,
 ): Promise<ConversationApp[]> {
   const token = await getAccessToken(subprojectId, creds);
   const url = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/apps`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchWithLogging(
+    url,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': getUserAgent('listConversationApps', subprojectId),
+      },
+    },
+    'listConversationApps',
+    subprojectId,
+  );
   if (!res.ok) {
     throw new Error(`Sinch list apps failed (${res.status}): ${await res.text()}`);
   }
@@ -161,24 +235,113 @@ async function listConversationApps(
   return data.apps ?? [];
 }
 
-const rcsAppCache = new Map<string, string>();
-
-/** Find (and cache) the Conversation app whose channel_credentials include RCS. */
-export async function findRcsAppId(
+/** Create a Conversation API app. */
+export async function createConversationApp(
   subprojectId: string,
   creds: SinchCredentials,
   region: string,
-): Promise<string | null> {
-  const cacheKey = `${subprojectId}:${region}`;
-  const cached = rcsAppCache.get(cacheKey);
-  if (cached) return cached;
-  const apps = await listConversationApps(subprojectId, creds, region);
-  const app = apps.find((a) => (a.channel_credentials ?? []).some((c) => c.channel === 'RCS'));
-  if (app?.id) {
-    rcsAppCache.set(cacheKey, app.id);
-    return app.id;
+  displayName: string,
+): Promise<ConversationApp> {
+  const token = await getAccessToken(subprojectId, creds);
+  const url = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/apps`;
+  const res = await fetchWithLogging(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': getUserAgent('createConversationApp', subprojectId),
+      },
+      body: JSON.stringify({ display_name: displayName }),
+    },
+    'createConversationApp',
+    subprojectId,
+  );
+  if (!res.ok) {
+    throw new Error(`Sinch create app failed (${res.status}): ${await res.text()}`);
   }
-  return null;
+  return res.json() as Promise<ConversationApp>;
+}
+
+/** Set/configure a channel credential on a Conversation app, preserving other channels. */
+export async function setChannelOnApp(
+  subprojectId: string,
+  creds: SinchCredentials,
+  region: string,
+  appId: string,
+  channelData: { channel: string; [key: string]: any },
+): Promise<unknown> {
+  const token = await getAccessToken(subprojectId, creds);
+  // Get existing app to preserve other credentials
+  const getUrl = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/apps/${encodeURIComponent(appId)}`;
+  const getRes = await fetchWithLogging(
+    getUrl,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': getUserAgent('getConversationApp', subprojectId),
+      },
+    },
+    'getConversationApp',
+    subprojectId,
+  );
+  let existingCreds: any[] = [];
+  if (getRes.ok) {
+    const appData = (await getRes.json()) as any;
+    existingCreds = appData.channel_credentials ?? [];
+  }
+
+  // Filter out existing credentials for same channel, append new one
+  const updatedCreds = existingCreds.filter((c: any) => c.channel !== channelData.channel);
+  updatedCreds.push(channelData);
+
+  const patchUrl = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/apps/${encodeURIComponent(appId)}?updateMask=channel_credentials`;
+  const patchRes = await fetchWithLogging(
+    patchUrl,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': getUserAgent('setChannelOnApp', subprojectId),
+      },
+      body: JSON.stringify({
+        channel_credentials: updatedCreds,
+      }),
+    },
+    'setChannelOnApp',
+    subprojectId,
+  );
+  if (!patchRes.ok) {
+    throw new Error(`Sinch setChannelOnApp failed (${patchRes.status}): ${await patchRes.text()}`);
+  }
+  return patchRes.json();
+}
+
+/** List Conversation templates in the project. */
+export async function listTemplates(
+  subprojectId: string,
+  creds: SinchCredentials,
+  region: string,
+): Promise<unknown> {
+  const token = await getAccessToken(subprojectId, creds);
+  const url = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/templates`;
+  const res = await fetchWithLogging(
+    url,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': getUserAgent('listTemplates', subprojectId),
+      },
+    },
+    'listTemplates',
+    subprojectId,
+  );
+  if (!res.ok) {
+    throw new Error(`Sinch list templates failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
 }
 
 /** Send a message via the Conversation API (messages:send). */
@@ -190,11 +353,20 @@ export async function sendConversationMessage(
 ): Promise<unknown> {
   const token = await getAccessToken(subprojectId, creds);
   const url = `https://${region}.conversation.api.sinch.com/v1/projects/${encodeURIComponent(subprojectId)}/messages:send`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await fetchWithLogging(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': getUserAgent('sendConversationMessage', subprojectId),
+      },
+      body: JSON.stringify(body),
+    },
+    'sendConversationMessage',
+    subprojectId,
+  );
   if (!res.ok) {
     throw new Error(`Sinch conversation send failed (${res.status}): ${await res.text()}`);
   }

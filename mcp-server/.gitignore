@@ -1,0 +1,6 @@
+dist/
+node_modules/
+.env
+
+# runtime-generated Imagen output (created on demand by server.ts at startup)
+public/
