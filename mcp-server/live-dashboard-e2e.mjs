@@ -2,14 +2,12 @@
  * FULL LIVE e2e: auth-server (LOGIN_MODE=dashboard) + mcp-server (CREDENTIAL_SOURCE=exchange),
  * both spawned locally, driven exactly as MCPJam would, against the REAL Sinch dashboard.
  *
- *   DCR -> /authorize -> paste real cookie only (auth-server mints the CCP JWT itself via
- *   refreshCcpToken) -> pick account/project -> client JWT
+ *   DCR -> /authorize -> paste real token+cookie -> pick account/project -> client JWT
  *   -> MCP initialize (mcp-server back-channels RFC 8693 -> real Sinch M2M token)
  *   -> tools/call whoami + list_active_numbers (real Sinch API call with the minted token)
  *
- * Reads the real dashboard session cookie from ../auth-server/.dashboard-cookie (set
- * FORCE_TOKEN_PASTE=1 to instead exercise the legacy paste-a-token path from .dashboard-token).
- * Never prints tokens, cookies, secrets, IDs, or phone numbers.
+ * Reads the real CCP token from ../auth-server/.dashboard-token and cookie from
+ * ../auth-server/.dashboard-cookie. Never prints tokens, cookies, secrets, IDs, or phone numbers.
  *
  * Prereq: both servers built (npm run build in each). Usage: node live-dashboard-e2e.mjs
  */
@@ -53,11 +51,9 @@ async function waitForHealth(base) {
 }
 
 async function main() {
+  const token = readFileFirst([join(AUTH_DIR, '.dashboard-token')], 'DASHBOARD_TOKEN');
   const cookie = readFileFirst([join(AUTH_DIR, '.dashboard-cookie')], 'DASHBOARD_COOKIE');
-  const token = process.env.FORCE_TOKEN_PASTE
-    ? readFileFirst([join(AUTH_DIR, '.dashboard-token')], 'DASHBOARD_TOKEN')
-    : undefined;
-  if (!cookie && !token) { console.error('No cookie at ../auth-server/.dashboard-cookie or $DASHBOARD_COOKIE'); process.exit(2); }
+  if (!token) { console.error('No token at ../auth-server/.dashboard-token or $DASHBOARD_TOKEN'); process.exit(2); }
 
   const { privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -102,10 +98,9 @@ async function main() {
       `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=demo&state=xyz&code_challenge=${challenge}&code_challenge_method=S256`;
     mergeCookies(jar, (await fetch(authUrl, { redirect: 'manual' })).headers.getSetCookie());
 
-    console.log(`  login mode: ${token ? 'token paste (FORCE_TOKEN_PASTE)' : 'cookie-only (auto-mint)'}`);
     let step = await fetch(`${AUTH}/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar) },
-      body: new URLSearchParams({ ...(token ? { dashboard_token: token } : {}), ...(cookie ? { dashboard_cookie: cookie } : {}) }),
+      body: new URLSearchParams({ dashboard_token: token, ...(cookie ? { dashboard_cookie: cookie } : {}) }),
       redirect: 'manual',
     });
     let guard = 0;
