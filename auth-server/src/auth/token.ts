@@ -8,7 +8,7 @@ import { pollDeviceToken } from './deviceStore.js';
 import { verifyPkceS256 } from './pkce.js';
 import { getDynamicClient } from './register.js';
 import { getCred, updateCred } from '../credStore.js';
-import { ensureFreshAccessKey, clientCredentialsToken } from '../dashboard.js';
+import { ensureFreshAccessKey, clientCredentialsToken, refreshCcpToken } from '../dashboard.js';
 
 const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange';
 
@@ -156,7 +156,19 @@ export async function handleToken(req: Request, res: Response): Promise<void> {
     return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
   }
 
-  // 4. Mint the signed JWT access token.
+  // 4. scripted mode: the access key was already minted at project-selection time — return the
+  //    raw static token as-is. No JWT signing, no back-channel exchange for this mode.
+  if (record.staticToken) {
+    res.json({
+      access_token: record.staticToken,
+      token_type: 'Bearer',
+      expires_in: config.accessTokenTtl,
+      scope: record.scope,
+    });
+    return;
+  }
+
+  // Mint the signed JWT access token.
   //    dashboard mode: identity-only claims + an opaque cred_ref (NO secrets in the token).
   //    local mode    : the user's fixed subproject_id.
   const claims: Record<string, unknown> = record.credRef
@@ -234,10 +246,15 @@ async function handleTokenExchange(req: Request, res: Response): Promise<void> {
     if (!cred.accountId) {
       return tokenError(res, 400, 'invalid_grant', 'credential reference is missing the account context');
     }
+    // The cookie can always mint a guaranteed-fresh CCP JWT, so prefer that over the JWT stored
+    // at login time (which may be hours old by the time the first exchange happens).
+    const dashboardJwt = cred.dashboardCookie
+      ? await refreshCcpToken(cred.dashboardCookie)
+      : cred.dashboardJwt;
     const key =
       cred.cachedKey ??
       (await ensureFreshAccessKey(
-        { token: cred.dashboardJwt, cookie: cred.dashboardCookie },
+        { token: dashboardJwt, cookie: cred.dashboardCookie },
         cred.accountId,
         cred.projectId,
       ));

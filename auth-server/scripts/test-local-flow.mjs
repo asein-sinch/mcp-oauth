@@ -1,13 +1,12 @@
 /**
- * Regression test for LOGIN_MODE=local (bcrypt USERS + subproject_id claim) and the device flow.
- * Ensures the dashboard-mode refactor did not break the existing paths.
+ * Regression test for LOGIN_MODE=local (USERS -> subproject_id claim, password NOT checked) and
+ * the device flow. Ensures the dashboard-mode refactor did not break the existing paths.
  */
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
-import bcrypt from 'bcryptjs';
 
 const PORT = 8098;
-const BASE = `http://localhost:${PORT}`;
+const BASE = `http://127.0.0.1:${PORT}`;
 const REDIRECT_URI = 'http://localhost:12345/callback';
 const CLIENT_ID = 'web';
 const CLIENT_SECRET = 'websecret-' + crypto.randomBytes(6).toString('hex');
@@ -36,7 +35,7 @@ async function main() {
     KEY_ID: 'test-key',
     // LOGIN_MODE defaults to local
     OAUTH_CLIENTS: JSON.stringify({ [CLIENT_ID]: { clientSecret: CLIENT_SECRET, redirectUris: [REDIRECT_URI] } }),
-    USERS: JSON.stringify({ [EMAIL]: { passwordHash: bcrypt.hashSync(PASSWORD, 10), subprojectId: SUBPROJECT } }),
+    USERS: JSON.stringify({ [EMAIL]: { subprojectId: SUBPROJECT } }),
   };
   const srv = spawn('node', ['dist/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   srv.stderr.on('data', (d) => process.stderr.write(`[srv] ${d}`));
@@ -79,11 +78,22 @@ async function main() {
     check('local JWT has subproject_id', claims.subproject_id === SUBPROJECT);
     check('local JWT has NO cred_ref', !('cred_ref' in claims));
 
-    check('local /login rejects bad password', (await fetch(`${BASE}/login`, {
+    // The password is no longer checked — a garbage value still succeeds as long as the email
+    // resolves to a configured demo user.
+    check('local /login ignores the password (garbage value still succeeds)', (await fetch(`${BASE}/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, scope: 'demo', state: 'st',
-        code_challenge: challenge, email: EMAIL, password: 'wrong',
+        code_challenge: challenge, email: EMAIL, password: 'anything-goes',
+      }), redirect: 'manual',
+    })).status === 302);
+
+    // The email is still checked — an unconfigured email is rejected regardless of password.
+    check('local /login rejects an unknown email', (await fetch(`${BASE}/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, scope: 'demo', state: 'st',
+        code_challenge: challenge, email: 'nobody@sinch.com', password: 'irrelevant',
       }), redirect: 'manual',
     })).status === 401);
 

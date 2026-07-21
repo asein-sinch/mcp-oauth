@@ -62,6 +62,37 @@ export function inspectDashboardToken(token: string): { valid: boolean; sub?: st
   return { valid: true, sub: typeof payload.sub === 'string' ? payload.sub : undefined };
 }
 
+/** True if `v` is a plausibly-a-JWT string (three dot-separated segments). */
+function looksLikeJwt(v: unknown): v is string {
+  return typeof v === 'string' && v.split('.').length === 3;
+}
+
+/**
+ * Mint a fresh CCP bearer JWT from the dashboard session cookie alone — no prior JWT needed.
+ * Captured: `POST /api/v1/dashboard_token`, empty body, no Authorization header, cookie-only.
+ * Lets the auth-server hold just the session cookie and refresh the JWT on demand rather than
+ * depending on a pasted token that expires in ~48h.
+ */
+export async function refreshCcpToken(cookie: string): Promise<string> {
+  if (MOCK) return 'mock-ccp-token-refreshed';
+
+  const res = await fetch(`${API_BASE}/api/v1/dashboard_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', Cookie: cookie },
+  });
+  if (!res.ok) throw new Error(`dashboard_token refresh HTTP ${res.status}`);
+  const body = (await res.json()) as Record<string, unknown>;
+
+  for (const key of ['token', 'access_token', 'accessToken', 'jwt', 'dashboardToken']) {
+    if (looksLikeJwt(body[key])) return body[key] as string;
+  }
+  for (const v of Object.values(body)) {
+    if (looksLikeJwt(v)) return v;
+  }
+  // Self-diagnosing: surface the response's key names (never values) so we can pin the field.
+  throw new Error(`dashboard_token response had no JWT-shaped field — top-level keys: [${Object.keys(body).join(', ')}]`);
+}
+
 // ── GraphQL transport ─────────────────────────────────────────────────────────
 async function gql<T>(
   creds: DashboardCreds,
@@ -167,6 +198,21 @@ async function listAccessKeys(creds: DashboardCreds, accountId: string, projectI
     `    id\n    displayName\n    projectId\n    createdAt\n    __typename\n  }\n}`;
   const data = await gql<{ listAccessKeys?: ExistingKey[] }>(creds, 'ListAccessKeys', query, { accountId, projectId });
   return data.listAccessKeys ?? [];
+}
+
+/** Sinch caps access keys at 10 per project. */
+export const ACCESS_KEY_MAX = 10;
+
+/** How many access keys a project already has, and whether it's at the cap (blocks creating one). */
+export async function getAccessKeyUsage(
+  creds: DashboardCreds,
+  accountId: string,
+  projectId: string,
+): Promise<{ count: number; atCap: boolean }> {
+  if (config.dashboardMockAtCap) return { count: ACCESS_KEY_MAX, atCap: true };
+  if (MOCK) return { count: 0, atCap: false };
+  const keys = await listAccessKeys(creds, accountId, projectId);
+  return { count: keys.length, atCap: keys.length >= ACCESS_KEY_MAX };
 }
 
 async function deleteAccessKey(creds: DashboardCreds, accountId: string, accessKeyId: string): Promise<void> {

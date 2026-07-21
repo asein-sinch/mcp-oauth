@@ -89,7 +89,6 @@ export async function handleDevicePost(req: Request, res: Response): Promise<voi
   const body = req.body as Record<string, unknown>;
   const userCode = String(body.user_code ?? '').trim().toUpperCase();
   const email = String(body.email ?? '');
-  const password = String(body.password ?? '');
 
   const record = getByUserCode(userCode);
   if (!record) {
@@ -100,10 +99,10 @@ export async function handleDevicePost(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const user = await verifyCredentials(email, password);
+  const user = verifyCredentials(email);
   if (!user) {
     res.status(401).type('html').send(renderDevice({
-      error: 'Invalid email or password.',
+      error: 'No demo user configured for that email.',
       prefilled: userCode,
     }));
     return;

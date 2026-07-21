@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 
 const PORT = 8099;
-const BASE = `http://localhost:${PORT}`;
+const BASE = `http://127.0.0.1:${PORT}`;
 const REDIRECT_URI = 'http://localhost:12345/callback';
 const BACKCHANNEL_ID = 'mcp-backchannel';
 const BACKCHANNEL_SECRET = 'bcsecret-' + crypto.randomBytes(8).toString('hex');
@@ -89,14 +89,18 @@ async function main() {
     const authRes = await fetch(authUrl, { redirect: 'manual' });
     mergeCookies(jar, authRes.headers.getSetCookie());
     const authBody = await authRes.text();
-    check('GET /authorize renders paste-token form', authRes.status === 200 && authBody.includes('name="dashboard_token"'));
+    check(
+      'GET /authorize renders paste form (cookie required, token optional)',
+      authRes.status === 200 && authBody.includes('name="dashboard_cookie"') && authBody.includes('name="dashboard_token"'),
+    );
     check('GET /authorize sets wizard cookie', jar.has('sid'));
 
-    // 3. POST /login (mock): paste token -> single account + project auto-skip -> 302 with code.
+    // 3. POST /login (mock): paste COOKIE ONLY (no token) -> auto-minted via refreshCcpToken ->
+    //    single account + project auto-skip -> 302 with code.
     const loginRes = await fetch(`${BASE}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar) },
-      body: new URLSearchParams({ dashboard_token: 'mock-ccp-token' }),
+      body: new URLSearchParams({ dashboard_cookie: 'mock-session-cookie' }),
       redirect: 'manual',
     });
     const loc = loginRes.headers.get('location');
@@ -176,17 +180,29 @@ async function main() {
     });
     check('token-exchange rejects forged subject_token (400)', forged.status === 400, `status ${forged.status}`);
 
-    // 8. Empty token paste is rejected at the login step.
+    // 8. Empty paste (neither cookie nor token) is rejected at the login step.
     const jar2 = new Map();
     const auth2 = await fetch(authUrl, { redirect: 'manual' });
     mergeCookies(jar2, auth2.headers.getSetCookie());
     const emptyTok = await fetch(`${BASE}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar2) },
-      body: new URLSearchParams({ dashboard_token: '' }),
+      body: new URLSearchParams({}),
       redirect: 'manual',
     });
-    check('empty token paste is rejected (400, re-renders form)', emptyTok.status === 400, `status ${emptyTok.status}`);
+    check('empty paste is rejected (400, re-renders form)', emptyTok.status === 400, `status ${emptyTok.status}`);
+
+    // 9. Token-only paste (no cookie) still works — backward compat with the original flow.
+    const jar3 = new Map();
+    const auth3 = await fetch(authUrl, { redirect: 'manual' });
+    mergeCookies(jar3, auth3.headers.getSetCookie());
+    const tokOnly = await fetch(`${BASE}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar3) },
+      body: new URLSearchParams({ dashboard_token: 'mock-ccp-token' }),
+      redirect: 'manual',
+    });
+    check('token-only paste (no cookie) still redirects (302)', tokOnly.status === 302, `status ${tokOnly.status}`);
   } finally {
     srv.kill('SIGKILL');
   }

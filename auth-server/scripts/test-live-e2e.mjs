@@ -53,9 +53,13 @@ function parseOptions(html) {
 }
 
 async function main() {
-  const token = readFileFirst(['.dashboard-token', 'scripts/.dashboard-token'], 'DASHBOARD_TOKEN');
+  // Cookie-only by default (proves refreshCcpToken mints the JWT server-side). Set
+  // FORCE_TOKEN_PASTE=1 to instead exercise the legacy token-paste path for comparison.
   const cookie = readFileFirst(['.dashboard-cookie', 'scripts/.dashboard-cookie'], 'DASHBOARD_COOKIE');
-  if (!token) { console.error('No token (./.dashboard-token or $DASHBOARD_TOKEN).'); process.exit(2); }
+  const token = process.env.FORCE_TOKEN_PASTE
+    ? readFileFirst(['.dashboard-token', 'scripts/.dashboard-token'], 'DASHBOARD_TOKEN')
+    : undefined;
+  if (!cookie && !token) { console.error('No cookie (./.dashboard-cookie or $DASHBOARD_COOKIE).'); process.exit(2); }
 
   const { privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
@@ -98,13 +102,15 @@ async function main() {
       `&code_challenge=${challenge}&code_challenge_method=S256`;
     const authRes = await fetch(authUrl, { redirect: 'manual' });
     mergeCookies(jar, authRes.headers.getSetCookie());
-    check('/authorize renders paste-token form', (await authRes.text()).includes('name="dashboard_token"'));
+    check('/authorize renders paste form', (await authRes.text()).includes('name="dashboard_cookie"'));
 
-    // 3. POST /login with the REAL token + cookie.
+    // 3. POST /login. Cookie-only (default) proves refreshCcpToken mints the JWT server-side;
+    //    FORCE_TOKEN_PASTE=1 exercises the legacy paste-a-token path instead.
+    console.log(`  login mode: ${token ? 'token paste (FORCE_TOKEN_PASTE)' : 'cookie-only (auto-mint)'}`);
     let step = await fetch(`${BASE}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar) },
-      body: new URLSearchParams({ dashboard_token: token, ...(cookie ? { dashboard_cookie: cookie } : {}) }),
+      body: new URLSearchParams({ ...(token ? { dashboard_token: token } : {}), ...(cookie ? { dashboard_cookie: cookie } : {}) }),
       redirect: 'manual',
     });
 

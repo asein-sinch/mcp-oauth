@@ -15,6 +15,9 @@ export interface AuthCodeRecord {
   accountId?: string;
   projectId?: string;
   credRef?: string;
+  // scripted mode only: the raw base64("projectId:accessKey:accessSecret") static token, minted
+  // immediately at project-selection time — returned as-is by /token, no JWT signing involved.
+  staticToken?: string;
   expiresAt: number; // epoch ms
 }
 

@@ -4,3 +4,8 @@
 scripts/.dashboard-token
 .dashboard-cookie
 scripts/.dashboard-cookie
+.dashboard-account-id
+scripts/.dashboard-account-id
+.dashboard-login-sequence
+.scripted-static-token
+scripts/.scripted-static-token

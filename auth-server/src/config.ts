@@ -11,8 +11,6 @@ const clientSchema = z.object({
 });
 
 const userSchema = z.object({
-  // bcrypt hash of the user's password (never store plaintext)
-  passwordHash: z.string().min(1),
   // the Sinch Build subproject this user is mapped to -> becomes the JWT claim
   subprojectId: z.string().min(1),
 });
@@ -43,9 +41,14 @@ const envSchema = z
     //  - local     : authenticate against the bcrypt USERS map; user -> fixed subproject_id.
     //  - dashboard : the user pastes their Sinch dashboard (CCP) bearer token; we then list their
     //                accounts + projects via GraphQL and mint M2M creds on demand (token exchange).
-    LOGIN_MODE: z.enum(['local', 'dashboard']).default('local'),
+    //  - scripted  : the user types their real Sinch ID email/password (+SMS OTP); we drive the
+    //                Auth0 login chain ourselves to obtain the session cookie, then mint a static
+    //                access-key token immediately (no back-channel exchange).
+    LOGIN_MODE: z.enum(['local', 'dashboard', 'scripted']).default('local'),
     // When set ("1"/"true"), dashboard.ts returns fixtures instead of calling the real GraphQL API.
     DASHBOARD_MOCK: z.string().optional(),
+    // Testing only: forces getAccessKeyUsage() to report every project as at the 10-key cap.
+    DASHBOARD_MOCK_AT_CAP: z.string().optional(),
 
     // Sinch Customer Dashboard GraphQL API (accounts, projects, access keys), authorized by the
     // pasted CCP bearer token (iss: "CCP").
@@ -82,6 +85,7 @@ export const config = {
   users,
   loginMode: raw.LOGIN_MODE,
   dashboardMock: raw.DASHBOARD_MOCK === '1' || raw.DASHBOARD_MOCK === 'true',
+  dashboardMockAtCap: raw.DASHBOARD_MOCK_AT_CAP === '1' || raw.DASHBOARD_MOCK_AT_CAP === 'true',
   dashboardGraphqlUrl: raw.DASHBOARD_GRAPHQL_URL,
   sinchAuthUrl: raw.SINCH_AUTH_URL,
   accessKeyDisplayName: raw.ACCESS_KEY_DISPLAY_NAME,

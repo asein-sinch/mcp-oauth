@@ -5,6 +5,7 @@ import { loadKeys } from './keys.js';
 import { handleAuthorize } from './auth/authorize.js';
 import {
   handleLogin,
+  handleOtp,
   handleSelectAccount,
   handleSelectProject,
 } from './auth/login.js';
@@ -42,7 +43,8 @@ async function main(): Promise<void> {
   app.get('/authorize', handleAuthorize);
   app.get('/login', handleAuthorize); // same query contract; re-renders the form
   app.post('/login', handleLogin);
-  // Dashboard-mode wizard steps (LOGIN_MODE=dashboard); inert in local mode.
+  // Dashboard/scripted-mode wizard steps; inert in local mode.
+  app.post('/otp', handleOtp); // scripted mode only: submit the SMS code
   app.post('/select-account', handleSelectAccount);
   app.post('/select-project', handleSelectProject);
   app.post('/token', handleToken);

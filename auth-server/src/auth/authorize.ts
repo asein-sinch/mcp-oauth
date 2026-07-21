@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { config } from '../config.js';
-import { renderLoginPage, renderTokenPage } from './login.js';
+import { renderLoginPage, renderTokenPage, renderCredentialsPage } from './login.js';
 import { getDynamicClient } from './register.js';
 import { createSession } from './loginSession.js';
 
@@ -56,12 +56,13 @@ export function handleAuthorize(req: Request, res: Response): void {
     res.status(400).type('html').send(renderLoginPage({ error: result.error }));
     return;
   }
-  if (config.loginMode === 'dashboard') {
-    // Dashboard mode is a multi-step wizard: keep the OAuth params server-side, keyed by an
-    // opaque sid in the cookie session. The first step is pasting the dashboard token.
-    const id = createSession(result.params);
+  if (config.loginMode === 'dashboard' || config.loginMode === 'scripted') {
+    // Both are multi-step wizards: keep the OAuth params server-side, keyed by an opaque sid in
+    // the cookie session. dashboard mode starts by pasting a token; scripted mode by typing
+    // real credentials.
+    const id = createSession(result.params, config.loginMode === 'scripted' ? 'credentials' : 'token');
     if (req.session) req.session.loginSid = id;
-    res.type('html').send(renderTokenPage({}));
+    res.type('html').send(config.loginMode === 'scripted' ? renderCredentialsPage({}) : renderTokenPage({}));
     return;
   }
   // Local mode: render the login page, carrying the OAuth params as hidden fields.
