@@ -183,6 +183,31 @@ def _build_auth_card(user_code: str, verification_uri: str) -> tuple[dict, str]:
   }, surface_id
 
 
+# ── MONKEY-PATCH FOR VERTEX AI SESSION SERVICE USER ID VALIDATION ────────────
+# When utilizing the Google Cloud Console's "Playground", the session resource is
+# owned by the active Google Cloud user email. Our hardcoded "remote_agent" ID
+# causes validation failures due to ownership mismatches. This patch dynamically
+# intercepts get_session, retrieves the correct user ID from the active session
+# metadata on the Vertex server, and uses it to satisfy the SDK's assertions.
+_original_get_session = VertexAiSessionService.get_session
+
+async def _patched_get_session(self, *, app_name, user_id, session_id, config=None):
+  try:
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_resource_name = f"reasoningEngines/{reasoning_engine_id}/sessions/{session_id}"
+    async with self._get_api_client() as api_client:
+      session_res = await api_client.agent_engines.sessions.get(name=session_resource_name)
+      if session_res and getattr(session_res, "user_id", None):
+        user_id = session_res.user_id
+        logger.info("[SESSION PATCH] Resolved actual session owner: %s", user_id)
+  except Exception as e:
+    logger.debug("[SESSION PATCH] Could not pre-fetch session owner (e.g. non-existent): %s", e)
+
+  return await _original_get_session(self, app_name=app_name, user_id=user_id, session_id=session_id, config=config)
+
+VertexAiSessionService.get_session = _patched_get_session
+
+
 class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
   """An agent executor for the Sinch Messaging Agent A2UI implementation."""
 
@@ -202,10 +227,8 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     # Session service — persists across container replicas on Agent Engine.
     project = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    agent_engine_id = (
-        os.environ.get("SINCH_AGENT_ENGINE_ID")       # explicit env var (non-reserved)
-        or os.environ.get("K_SERVICE")                 # fallback: Cloud Run service name
-    )
+    agent_engine_id = os.environ.get("SINCH_AGENT_ENGINE_ID")
+
 
     if project and agent_engine_id:
       logger.info(
@@ -448,6 +471,8 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
           session_id=session_id,
       )
 
+    session_user_id = session.user_id if session else self._user_id
+
     # 1. SESSION RECOVERY: Parse userAction inputs/context from incoming parts
     try:
       if hasattr(context, "message") and context.message and hasattr(context.message, "parts"):
@@ -572,7 +597,7 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       try:
         async def _collect_response() -> str | None:
           async for event in runner.run_async(
-              user_id=self._user_id, session_id=session.id, new_message=content
+              user_id=session_user_id, session_id=session.id, new_message=content
           ):
             if event.is_final_response():
               if event.content and event.content.parts:

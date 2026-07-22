@@ -32,9 +32,9 @@ def patched_message_to_dict(message, *args, **kwargs):
 json_format.MessageToDict = patched_message_to_dict
 
 def main():
-    project_id = "qwiklabs-gcp-00-dca266732746"
+    project_id = "sinch-build"
     location = "us-central1"
-    bucket = "gs://agent-staging-bucket-qwiklabs-gcp-00-dca266732746"
+    bucket = "gs://reasoning-engine-artifacts-for-sinch-agent"
     
     vertexai.init(project=project_id, location=location, staging_bucket=bucket)
     client = vertexai.Client(project=project_id, location=location)
@@ -78,7 +78,7 @@ def main():
     )
     
     # Existing Reasoning Engine ID — update in-place, no new ID created
-    REASONING_ENGINE_ID = "3590519541932752896"
+    REASONING_ENGINE_ID = "7311979373861535744"
     existing_resource_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{REASONING_ENGINE_ID}"
 
     # Deploy config with requirements and extra packages

@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+sa-key.json
+sinch-build-a67307e5a6f7.json

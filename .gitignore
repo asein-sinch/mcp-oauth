@@ -36,3 +36,5 @@ mcp-server/run-with-env.mjs
 *.db
 *.sqlite
 sa-key.json
+agent-py/a2ui/
+mcp-server/public/images/
