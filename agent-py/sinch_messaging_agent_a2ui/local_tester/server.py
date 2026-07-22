@@ -80,6 +80,8 @@ async def get_index():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"))
 
 @app.post("/jsonrpc")
+@app.post("/jsonrpc/v1/message:send")
+@app.post("/v1/message:send")
 async def handle_jsonrpc(request: Request):
     body = await request.json()
     logger.info(f"Received JSON-RPC request: {body}")
@@ -149,6 +151,9 @@ async def handle_jsonrpc(request: Request):
             "jsonrpc": "2.0",
             "result": {
                 "message": {
+                    "kind": "message",
+                    "message_id": f"msg_resp_{request_id or 'default'}",
+                    "role": "agent",
                     "parts": response_parts
                 }
             },
