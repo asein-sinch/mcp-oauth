@@ -806,7 +806,7 @@ class CloudRunProxyAgent(agent_execution.AgentExecutor):
       logger.info("[PROXY] Sending POST to Cloud Run URL: %s", cloud_run_url)
 
       async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(cloud_run_url, json=payload)
+        resp = await client.post(cloud_run_url, json=payload, follow_redirects=True)
 
       logger.info("[PROXY] Cloud Run response status: %s", resp.status_code)
 

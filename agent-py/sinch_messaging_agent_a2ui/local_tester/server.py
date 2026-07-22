@@ -79,6 +79,7 @@ async def get_agent_card():
 async def get_index():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"))
 
+@app.post("/")
 @app.post("/jsonrpc")
 @app.post("/jsonrpc/v1/message:send")
 @app.post("/v1/message:send")
