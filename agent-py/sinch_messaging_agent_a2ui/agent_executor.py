@@ -745,3 +745,107 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       event_queue: events.EventQueue,
   ) -> None:
     raise a2a_errors.ServerError(error=types.UnsupportedOperationError())
+
+
+class CloudRunProxyAgent(agent_execution.AgentExecutor):
+  """A lightweight proxy executor that forwards A2A requests from Vertex AI to Cloud Run."""
+
+  def __init__(self) -> None:
+    pass
+
+  async def execute(
+      self,
+      context: agent_execution.RequestContext,
+      event_queue: events.EventQueue,
+  ) -> None:
+    task = context.current_task
+    if not task:
+      if not context.message:
+        return
+      task = utils.new_task(context.message)
+      await event_queue.enqueue_event(task)
+
+    updater = tasks.TaskUpdater(event_queue, task.id, task.context_id)
+    await updater.start_work()
+
+    try:
+      query = context.get_user_input()
+      session_id = task.context_id
+      task_id = task.id
+
+      logger.info("[PROXY] Forwarding query '%s' to Cloud Run for session %s", query, session_id)
+
+      message_parts = []
+      for part in context.message.parts:
+        root = part.root
+        if isinstance(root, types.TextPart):
+          message_parts.append({"text": root.text})
+        elif isinstance(root, types.DataPart):
+          message_parts.append({
+              "data": root.data,
+              "metadata": root.metadata
+          })
+
+      if not message_parts and query:
+        message_parts.append({"text": query})
+
+      payload = {
+          "jsonrpc": "2.0",
+          "method": "message/send",
+          "params": {
+              "message": {
+                  "text": query,
+                  "parts": message_parts
+              },
+              "session_id": session_id
+          },
+          "id": 1
+      }
+
+      cloud_run_url = "https://sinch-messaging-agent-u6gcanwppa-uc.a.run.app/jsonrpc/v1/message:send"
+      logger.info("[PROXY] Sending POST to Cloud Run URL: %s", cloud_run_url)
+
+      async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(cloud_run_url, json=payload)
+
+      logger.info("[PROXY] Cloud Run response status: %s", resp.status_code)
+
+      if resp.status_code == 200:
+        result_json = resp.json()
+        logger.info("[PROXY] Success payload: %s", result_json)
+
+        parts_data = result_json.get("result", {}).get("message", {}).get("parts", [])
+        response_parts = []
+        for p in parts_data:
+          if "text" in p:
+            response_parts.append(types.Part(root=types.TextPart(text=p["text"])))
+          elif "data" in p:
+            response_parts.append(types.Part(root=types.DataPart(
+                data=p["data"],
+                metadata=p.get("metadata", {})
+            )))
+
+        await updater.add_artifact(response_parts, name="response")
+      else:
+        err_msg = f"Cloud Run service returned HTTP {resp.status_code}"
+        logger.error("[PROXY] Error: %s", err_msg)
+        await updater.add_artifact(
+            [types.Part(root=types.TextPart(text=f"⚠️ {err_msg}"))],
+            name="error"
+        )
+    except Exception as e:
+      logger.error("[PROXY] Exception in execution: %s", e, exc_info=True)
+      await updater.add_artifact(
+          [types.Part(root=types.TextPart(text=f"⚠️ Proxy error: {str(e)}"))],
+          name="error"
+      )
+
+    await updater.complete()
+
+  async def cancel(
+      self,
+      context: agent_execution.RequestContext,
+      event_queue: events.EventQueue,
+  ) -> None:
+    raise a2a_errors.ServerError(error=types.UnsupportedOperationError())
+

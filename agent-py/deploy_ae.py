@@ -5,7 +5,7 @@ from google.genai import types
 from google.protobuf import json_format
 from a2a.types import AgentSkill
 from vertexai.preview.reasoning_engines.templates.a2a import create_agent_card
-from sinch_messaging_agent_a2ui.agent_executor import AdkAgentToA2AExecutor
+from sinch_messaging_agent_a2ui.agent_executor import CloudRunProxyAgent
 import json
 
 # Monkey-patch json_format.MessageToJson and MessageToDict to handle Pydantic models (like AgentCard) correctly
@@ -74,7 +74,7 @@ def main():
     # Instantiate the A2aAgent using the custom executor builder
     a2a_agent = A2aAgent(
         agent_card=my_card,
-        agent_executor_builder=AdkAgentToA2AExecutor,
+        agent_executor_builder=CloudRunProxyAgent,
     )
     
     # Existing Reasoning Engine ID — update in-place, no new ID created
