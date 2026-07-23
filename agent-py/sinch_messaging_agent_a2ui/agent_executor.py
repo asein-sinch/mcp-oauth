@@ -248,7 +248,7 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
     self._app_name = "sinch_messaging_agent"
 
   # ── Runner factory ────────────────────────────────────────────────────────
-  def _create_runner(self, sinch_token: str | None) -> runners.Runner | None:
+  def _create_runner(self, sinch_token: str | None, sinch_id_token: str | None = None) -> runners.Runner | None:
     """Create a Runner whose MCP toolset carries the user's Bearer token.
     Returns None on failure.
     """
@@ -258,6 +258,8 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       headers = {}
       if sinch_token:
         headers["Authorization"] = f"Bearer {sinch_token}"
+      if sinch_id_token:
+        headers["X-Sinch-Id-Token"] = sinch_id_token
 
       mcp_toolset = McpToolset(
           connection_params=StreamableHTTPConnectionParams(
@@ -564,7 +566,8 @@ class AdkAgentToA2AExecutor(agent_execution.AgentExecutor):
       logger.info("[DEBUG] Injected state to query: %s", query)
 
     # ── 4. LLM CALL with per-user runner ──────────────────────────────
-    runner = self._create_runner(sinch_token)
+    sinch_id_token = getattr(context, "sinch_id_token", None)
+    runner = self._create_runner(sinch_token, sinch_id_token)
     if runner is None:
       await updater.start_work()
       await updater.add_artifact(
@@ -805,8 +808,14 @@ class CloudRunProxyAgent(agent_execution.AgentExecutor):
       cloud_run_url = "https://sinch-messaging-agent-u6gcanwppa-uc.a.run.app/jsonrpc/v1/message:send"
       logger.info("[PROXY] Sending POST to Cloud Run URL: %s", cloud_run_url)
 
+      forward_headers = {}
+      if context.call_context and context.call_context.state and "headers" in context.call_context.state:
+        incoming_headers = context.call_context.state["headers"]
+        if "authorization" in incoming_headers:
+          forward_headers["authorization"] = incoming_headers["authorization"]
+
       async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(cloud_run_url, json=payload, follow_redirects=True)
+        resp = await client.post(cloud_run_url, json=payload, headers=forward_headers, follow_redirects=True)
 
       logger.info("[PROXY] Cloud Run response status: %s", resp.status_code)
 
@@ -814,7 +823,8 @@ class CloudRunProxyAgent(agent_execution.AgentExecutor):
         result_json = resp.json()
         logger.info("[PROXY] Success payload: %s", result_json)
 
-        parts_data = result_json.get("result", {}).get("message", {}).get("parts", [])
+        result_block = result_json.get("result", {})
+        parts_data = result_block.get("parts", []) if "parts" in result_block else result_block.get("message", {}).get("parts", [])
         response_parts = []
         for p in parts_data:
           if "text" in p:

@@ -44,7 +44,7 @@ class MockServerCallContext:
         self.requested_extensions = set()
 
 class LocalRequestContext:
-    def __init__(self, message, task_id="test_task", context_id="test_context"):
+    def __init__(self, message, task_id="test_task", context_id="test_context", sinch_id_token=None):
         self.message = message
         self.task_id = task_id
         self.context_id = context_id
@@ -55,6 +55,7 @@ class LocalRequestContext:
         )
         self.call_context = MockServerCallContext()
         self.metadata = {}
+        self.sinch_id_token = sinch_id_token
 
     def get_user_input(self, delimiter: str = "\n") -> str:
         text_parts = []
@@ -123,7 +124,26 @@ async def handle_jsonrpc(request: Request):
             parts=message_parts
         )
         
-        ctx = LocalRequestContext(msg_obj, task_id="task_" + session_id, context_id=session_id)
+        # Resolve the Sinch OIDC user token:
+        auth_header = request.headers.get("Authorization")
+        sinch_id_token = None
+
+        # 1. Attempt JSON-RPC body params extraction (oauth2 configuration)
+        if isinstance(params, dict):
+            authorization = params.get("authorization", {})
+            if isinstance(authorization, dict):
+                oauth2 = authorization.get("oauth2", {})
+                if isinstance(oauth2, dict):
+                    sinch_id_token = oauth2.get("idToken") or oauth2.get("accessToken")
+
+        # 2. Fall back to incoming HTTP Authorization header
+        if not sinch_id_token and auth_header and auth_header.startswith("Bearer "):
+            sinch_id_token = auth_header.split(" ")[1]
+
+        if sinch_id_token:
+            logger.info(f"[SECURITY] Sinch ID Token resolved (length: {len(sinch_id_token)})")
+
+        ctx = LocalRequestContext(msg_obj, task_id="task_" + session_id, context_id=session_id, sinch_id_token=sinch_id_token)
         queue = events.EventQueue()
         
         # Execute the agent runner inside the A2A Executor
@@ -136,28 +156,23 @@ async def handle_jsonrpc(request: Request):
                 event = queue.queue.get_nowait()
                 if isinstance(event, a2a_types.TaskArtifactUpdateEvent):
                     for part in event.artifact.parts:
-                        root = part.root
-                        if isinstance(root, a2a_types.TextPart):
-                            response_parts.append({"text": root.text})
-                        elif isinstance(root, a2a_types.DataPart):
-                            response_parts.append({
-                                "data": root.data,
-                                "metadata": root.metadata
-                            })
+                        response_parts.append(part)
                 queue.queue.task_done()
             except asyncio.QueueEmpty:
                 break
                 
+        # Build strict, non-nested, camelCased A2A response
+        msg_resp = a2a_types.Message(
+            message_id=f"msg_resp_{request_id or 'default'}",
+            role="agent",
+            parts=response_parts,
+            task_id="task_" + session_id,
+            context_id=session_id
+        )
+        
         return {
             "jsonrpc": "2.0",
-            "result": {
-                "message": {
-                    "kind": "message",
-                    "message_id": f"msg_resp_{request_id or 'default'}",
-                    "role": "agent",
-                    "parts": response_parts
-                }
-            },
+            "result": msg_resp.model_dump(mode="json", by_alias=True, exclude_none=True),
             "id": request_id
         }
         
