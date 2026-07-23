@@ -6,8 +6,16 @@ import type { Request, Response, NextFunction } from 'express';
  * what Gemini Enterprise sends to this MCP server while the real OAuth/token-exchange integration
  * is being designed. Temporary debugging instrumentation — not signature verification, not for
  * production use, remove once the shape of Gemini's requests is understood.
+ *
+ * /healthz is polled by Sliplane every minute and carries nothing interesting — it's skipped down
+ * to a single summary line (via responseLogger) so it doesn't drown out real traffic.
  */
+function isHealthCheck(req: Request): boolean {
+  return req.path === '/healthz';
+}
+
 export function requestLogger(req: Request, _res: Response, next: NextFunction): void {
+  if (isHealthCheck(req)) return next();
   const stamp = new Date().toISOString();
   console.log(`\n[req] ${stamp} ${req.method} ${req.originalUrl} from ${req.ip}`);
   console.log('[req] headers:', JSON.stringify(req.headers, null, 2));
@@ -39,6 +47,7 @@ export function requestLogger(req: Request, _res: Response, next: NextFunction):
 
 /** Mount after express.json() — logs the parsed body, since requestLogger runs before parsing. */
 export function requestBodyLogger(req: Request, _res: Response, next: NextFunction): void {
+  if (isHealthCheck(req)) return next();
   if (req.body && Object.keys(req.body as object).length > 0) {
     console.log('[req] body:', JSON.stringify(req.body, null, 2));
   } else {
