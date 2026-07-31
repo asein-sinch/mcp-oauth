@@ -25,7 +25,13 @@ Configure your login credentials and details:
 ```bash
 export ADMIN_USERNAME="admin"
 export ADMIN_PASSWORD="your-secure-password"
+export SESSION_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
 ```
+
+> **Both are required.** There is no default password — if `ADMIN_PASSWORD` is unset the app
+> refuses all logins rather than falling back to a value published in this public repository.
+> `SESSION_SECRET` signs the session cookie; if unset, a random secret is generated per process and
+> every restart invalidates existing sessions.
 
 ### 2b. Slack notifications & auto-approval
 Copy `.env.example` to `.env` and fill it in — `main.py` loads it on startup, and `.env` is gitignored.

@@ -1,5 +1,6 @@
 import os
 import json
+import secrets
 import sqlite3
 import threading
 import time
@@ -7,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi import FastAPI, Form, Request, Depends, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -52,9 +54,23 @@ PROJECT_ID = os.getenv("PROJECT_ID", "sinch-build")
 SUBSCRIPTION_ID = os.getenv("SUBSCRIPTION_ID", "marketplace-events")
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sinch-market-2026")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 COOKIE_NAME = "sinch_session"
-COOKIE_VALUE = "authenticated_admin_session_token"
+SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", "43200"))  # 12h
+# Sliplane terminates TLS, so the cookie can be https-only. Overridable for
+# local http development.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() in ("1", "true", "yes")
+
+# Sessions are signed rather than a fixed string: this repo is public, so any
+# constant cookie value would be a published credential.
+SESSION_SECRET = os.getenv("SESSION_SECRET") or secrets.token_urlsafe(32)
+if not os.getenv("SESSION_SECRET"):
+    print("⚠️ SESSION_SECRET unset — using a random per-process secret. "
+          "Sessions will not survive a restart. Set it in the environment.")
+_signer = URLSafeTimedSerializer(SESSION_SECRET, salt="sinch-dashboard-session")
+
+if not ADMIN_PASSWORD:
+    print("🚫 ADMIN_PASSWORD is not set — login is disabled until it is configured.")
 
 # ==========================================
 # DATABASE LAYER
@@ -113,8 +129,15 @@ def insert_event(event_id: str, event_type: str, entitlement_id: str, account_id
 # ==========================================
 
 def is_authenticated(request: Request) -> bool:
-    """Checks if the user has a valid admin session cookie."""
-    return request.cookies.get(COOKIE_NAME) == COOKIE_VALUE
+    """Checks for a validly signed, unexpired session cookie."""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return False
+    try:
+        _signer.loads(token, max_age=SESSION_MAX_AGE)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
 
 # ==========================================
 # EVENT HANDLING
@@ -222,18 +245,26 @@ def get_login(request: Request, error: Optional[str] = None):
 @app.post("/login")
 def post_login(response: Response, username: str = Form(...), password: str = Form(...)):
     """Handles admin authentication."""
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-        # Authentication successful - set cookie
+    # No password configured means no way in - refuse rather than fall back to
+    # a default, which would be a published credential in this public repo.
+    if not ADMIN_PASSWORD:
+        return RedirectResponse(url="/login?error=Server+is+not+configured+for+login.", status_code=303)
+
+    # compare_digest on both fields to avoid leaking either via timing.
+    valid = (secrets.compare_digest(username, ADMIN_USERNAME)
+             & secrets.compare_digest(password, ADMIN_PASSWORD))
+    if valid:
         response = RedirectResponse(url="/dashboard", status_code=303)
         response.set_cookie(
             key=COOKIE_NAME,
-            value=COOKIE_VALUE,
+            value=_signer.dumps({"u": ADMIN_USERNAME}),
             httponly=True,
             samesite="lax",
-            secure=False  # Set to True in production with SSL
+            secure=COOKIE_SECURE,
+            max_age=SESSION_MAX_AGE,
         )
         return response
-    
+
     # Auth failed - reload with error
     return RedirectResponse(url="/login?error=Invalid+credentials.+Access+denied.", status_code=303)
 
