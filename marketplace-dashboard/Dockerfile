@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files and folders into container
 COPY templates/ /app/templates/
-COPY main.py /app/
+COPY main.py slack.py procurement.py /app/
 
 # Expose server port
 EXPOSE 8080

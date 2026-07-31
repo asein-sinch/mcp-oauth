@@ -486,11 +486,11 @@
                 <div class="timeline">
                     {% for event in events %}
                     {% set card_class = 'event-other' %}
-                    {% if event.event_type == 'ENTITLEMENT_CREATION_REQUESTED' %}
+                    {% if event.event_type in ['ENTITLEMENT_CREATION_REQUESTED', 'ENTITLEMENT_PLAN_CHANGE_REQUESTED'] %}
                         {% set card_class = 'event-creation' %}
-                    {% elif event.event_type == 'ENTITLEMENT_ACTIVE' %}
+                    {% elif event.event_type in ['ENTITLEMENT_ACTIVE', 'ACCOUNT_ACTIVE'] %}
                         {% set card_class = 'event-active' %}
-                    {% elif event.event_type == 'ENTITLEMENT_CANCELLED' %}
+                    {% elif event.event_type in ['ENTITLEMENT_CANCELLED', 'ENTITLEMENT_SUSPENDED', 'ENTITLEMENT_PENDING_CANCELLATION'] %}
                         {% set card_class = 'event-cancelled' %}
                     {% endif %}
 

@@ -6,11 +6,20 @@ import time
 from datetime import datetime
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, Depends, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from google.cloud import pubsub_v1
 from google.api_core.exceptions import GoogleAPIError
+
+# Must run before importing slack/procurement: both read their config at import
+# time. Path is anchored to this file so it works regardless of the working
+# directory. No-op in production, where Sliplane sets real env vars (which win).
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+import slack
+import procurement
 
 # Initialize FastAPI App
 app = FastAPI(title="Sinch Marketplace Event Dashboard")
@@ -108,6 +117,45 @@ def is_authenticated(request: Request) -> bool:
     return request.cookies.get(COOKIE_NAME) == COOKIE_VALUE
 
 # ==========================================
+# EVENT HANDLING
+# ==========================================
+
+def process_event(event: dict, message_id: str = "local") -> Optional[dict]:
+    """
+    Handles one Marketplace event: persist it, answer it, then notify Slack.
+
+    Kept at module level and free of Pub/Sub types so it can be exercised from a
+    test without a subscription. Returns the approval result, or None when the
+    event type has no approve action.
+    """
+    event_id = event.get("eventId", f"msg-{message_id}")
+    event_type = event.get("eventType", "UNKNOWN_EVENT")
+    entitlement_id = event.get("entitlement", {}).get("id", "N/A")
+    account_id = event.get("account", {}).get("id", "N/A")
+
+    print(f"📥 Received Pub/Sub message: {event_type}")
+
+    # Store event in our SQLite DB
+    insert_event(
+        event_id=event_id,
+        event_type=event_type,
+        entitlement_id=entitlement_id,
+        account_id=account_id,
+        payload=json.dumps(event)
+    )
+
+    # Answer the notification, so an accepted offer provisions without manual
+    # intervention. Other event types are notify-only: nothing to approve.
+    result = None
+    if event_type == "ACCOUNT_ACTIVE":
+        result = procurement.approve_account(account_id)
+    elif event_type == "ENTITLEMENT_CREATION_REQUESTED":
+        result = procurement.approve_entitlement(entitlement_id)
+
+    slack.notify(event_type, entitlement_id, account_id, event, result)
+    return result
+
+# ==========================================
 # BACKGROUND PUB/SUB WORKER
 # ==========================================
 
@@ -126,27 +174,10 @@ def pubsub_subscriber_worker():
             print(f"🔍 Attempting to subscribe to: {subscription_path}")
             
             def callback(message):
+                """Transport only: decode, delegate, acknowledge."""
                 try:
-                    data_str = message.data.decode("utf-8")
-                    event = json.loads(data_str)
-                    
-                    event_id = event.get("eventId", f"msg-{message.message_id}")
-                    event_type = event.get("eventType", "UNKNOWN_EVENT")
-                    entitlement_id = event.get("entitlement", {}).get("id", "N/A")
-                    account_id = event.get("account", {}).get("id", "N/A")
-                    
-                    print(f"📥 Received Pub/Sub message: {event_type}")
-                    
-                    # Store event in our SQLite DB
-                    insert_event(
-                        event_id=event_id,
-                        event_type=event_type,
-                        entitlement_id=entitlement_id,
-                        account_id=account_id,
-                        payload=data_str
-                    )
-                    
-                    # Acknowledge Pub/Sub message
+                    event = json.loads(message.data.decode("utf-8"))
+                    process_event(event, message.message_id)
                     message.ack()
                 except Exception as e:
                     print(f"❌ Error handling message: {e}")
@@ -243,7 +274,10 @@ def get_dashboard(request: Request):
             
         events.append(event_dict)
         
-        # Calculate stats
+        # Calculate stats. Deliberately strict: the tiles are labelled
+        # "Creation Requests" / "Active Subscriptions" / "Cancellations", so
+        # ACCOUNT_ACTIVE and suspensions are not folded in. They still appear in
+        # the timeline and in total_count.
         e_type = event_dict["event_type"]
         if e_type == "ENTITLEMENT_CREATION_REQUESTED":
             creation_count += 1
@@ -260,6 +294,19 @@ def get_dashboard(request: Request):
         "active_count": active_count,
         "cancelled_count": cancelled_count
     })
+
+@app.get("/api/health/slack")
+def get_health_slack(request: Request):
+    """Posts a test message so the Slack webhook can be verified on a deployed instance."""
+    if not is_authenticated(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    slack.notify(
+        event_type="HEALTH_CHECK",
+        entitlement_id="n/a",
+        account_id="n/a",
+        payload={"entitlement": {"product": "health-check"}},
+    )
+    return {"sent": True, "configured": bool(slack.WEBHOOK_URL)}
 
 @app.get("/api/events/count")
 def get_events_count(request: Request):
