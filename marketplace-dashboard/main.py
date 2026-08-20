@@ -158,7 +158,17 @@ def process_event(event: dict, message_id: str = "local") -> Optional[dict]:
 
     print(f"📥 Received Pub/Sub message: {event_type}")
 
-    # Store event in our SQLite DB
+    result = None
+    if event_type == "ACCOUNT_ACTIVE":
+        result = procurement.approve_account_if_signup_pending(account_id)
+        # Follow-up ACCOUNT_ACTIVE after signup is already granted — same account,
+        # not a second customer. Do not store or Slack it.
+        if result.get("skipped") and result.get("detail") == "signup not pending":
+            print(f"⏭️ Ignoring echo ACCOUNT_ACTIVE for account {account_id}")
+            return result
+    elif event_type == "ENTITLEMENT_CREATION_REQUESTED":
+        result = procurement.approve_entitlement(entitlement_id)
+
     insert_event(
         event_id=event_id,
         event_type=event_type,
@@ -166,15 +176,6 @@ def process_event(event: dict, message_id: str = "local") -> Optional[dict]:
         account_id=account_id,
         payload=json.dumps(event)
     )
-
-    # Answer the notification, so an accepted offer provisions without manual
-    # intervention. Other event types are notify-only: nothing to approve.
-    # ACCOUNT_ACTIVE means the account exists; POST signup only if GET shows PENDING.
-    result = None
-    if event_type == "ACCOUNT_ACTIVE":
-        result = procurement.approve_account_if_signup_pending(account_id)
-    elif event_type == "ENTITLEMENT_CREATION_REQUESTED":
-        result = procurement.approve_entitlement(entitlement_id)
 
     slack.notify(event_type, entitlement_id, account_id, event, result)
     return result
