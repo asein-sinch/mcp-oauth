@@ -169,9 +169,10 @@ def process_event(event: dict, message_id: str = "local") -> Optional[dict]:
 
     # Answer the notification, so an accepted offer provisions without manual
     # intervention. Other event types are notify-only: nothing to approve.
+    # ACCOUNT_ACTIVE means the account exists; POST signup only if GET shows PENDING.
     result = None
     if event_type == "ACCOUNT_ACTIVE":
-        result = procurement.approve_account(account_id)
+        result = procurement.approve_account_if_signup_pending(account_id)
     elif event_type == "ENTITLEMENT_CREATION_REQUESTED":
         result = procurement.approve_entitlement(entitlement_id)
 
