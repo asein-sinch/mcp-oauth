@@ -1,4 +1,5 @@
 import os
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
 import sys
 import asyncio
 from fastapi import FastAPI, Request
@@ -20,6 +21,7 @@ load_dotenv(os.path.join(parent_dir, '.env'))
 from a2a import types as a2a_types
 from a2a.server import events
 from sinch_messaging_agent_a2ui.agent_executor import AdkAgentToA2AExecutor
+from sinch_messaging_agent_a2ui.context_dump import dump_http_request
 
 app = FastAPI()
 
@@ -72,7 +74,7 @@ async def get_agent_card():
             "extensions": [{"uri": "https://a2ui.org/a2a-extension/a2ui/v0.8", "required": False}]
         },
         "name": "sinch_messaging_agent",
-        "url": "/jsonrpc",
+        "url": "https://sinch-messaging-agent-227017598651.us-central1.run.app",
         "version": "1.0.0"
     }
 
@@ -86,6 +88,7 @@ async def get_index():
 @app.post("/v1/message:send")
 async def handle_jsonrpc(request: Request):
     body = await request.json()
+    dump_http_request(request, body)
     logger.info(f"Received JSON-RPC request: {body}")
     
     if body.get("jsonrpc") != "2.0":
@@ -154,8 +157,12 @@ async def handle_jsonrpc(request: Request):
         while True:
             try:
                 event = queue.queue.get_nowait()
-                if isinstance(event, a2a_types.TaskArtifactUpdateEvent):
-                    for part in event.artifact.parts:
+                logger.info(f"[DEBUG QUEUE] Received event: type={type(event).__name__}, event={event}")
+                if hasattr(event, "artifact") and getattr(event, "artifact", None) and hasattr(event.artifact, "parts"):
+                    for part in getattr(event.artifact, "parts", []):
+                        response_parts.append(part)
+                elif hasattr(event, "parts") and getattr(event, "parts", None):
+                    for part in getattr(event, "parts", []):
                         response_parts.append(part)
                 queue.queue.task_done()
             except asyncio.QueueEmpty:

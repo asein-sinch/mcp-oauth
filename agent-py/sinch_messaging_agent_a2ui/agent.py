@@ -16,7 +16,7 @@ sinch_toolset = McpToolset(
 )
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
     name="sinch_messaging_agent",
     description="An enterprise assistant that generates interactive UIs to onboard senders, send campaigns, and track analytics.",
     instruction=(

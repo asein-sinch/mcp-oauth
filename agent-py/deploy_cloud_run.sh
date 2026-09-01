@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-PROJECT_ID="sinch-build"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+PROJECT_ID="${PROJECT_ID:-vusa-sinchagentaxdx-dev}"
 REGION="us-central1"
 IMAGE_TAG="gcr.io/$PROJECT_ID/sinch-messaging-agent:latest"
 SERVICE_NAME="sinch-messaging-agent"
@@ -29,7 +31,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --region "$REGION" \
   --allow-unauthenticated \
   --project="$PROJECT_ID" \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,SINCH_AUTH_SERVER_URL=https://asein-sinch-oauth-server.sliplane.app,SINCH_DEVICE_CLIENT_ID=sinch-agent,MCP_SERVER_URL=https://asein-sinch-mcp-jwt.sliplane.app/mcp"
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,SINCH_AUTH_SERVER_URL=https://asein-sinch-oauth-server.sliplane.app,SINCH_DEVICE_CLIENT_ID=sinch-agent,MCP_SERVER_URL=https://asein-sinch-mcp-jwt.sliplane.app/mcp,DUMP_AGENT_CONTEXT=true,GOOGLE_GENAI_USE_VERTEXAI=true"
 
 # 4. Fetch the deployed service URL
 SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME" --platform managed --region "$REGION" --project="$PROJECT_ID" --format='value(status.url)')
